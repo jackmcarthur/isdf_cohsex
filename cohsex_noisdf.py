@@ -422,7 +422,7 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
                 psiG_eps_tmp[:eps_psiG_comps.shape[0]] += psiprod[-eps_psiG_comps[:,0],-eps_psiG_comps[:,1],-eps_psiG_comps[:,2]]
 
             # v contribution, all G vectors
-            #sigma_out += xp.sum(xp.conj(psiG_vcoul_tmp) * V_qG[iqbar] * psiG_vcoul_tmp)
+            sigma_out += xp.sum(xp.conj(psiG_vcoul_tmp) * V_qG[iqbar] * psiG_vcoul_tmp)
             # W-v contribution, |G| < screened cutoff (conj on the right side because of fortran order)
             sigma_out += xp.dot(psiG_eps_tmp,xp.matmul(Wminv_qbarGG,xp.conj(psiG_eps_tmp)))
 
