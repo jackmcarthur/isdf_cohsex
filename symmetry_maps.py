@@ -392,7 +392,8 @@ class SymMaps:
     def get_gvecs_kfull(self,wfn,nk):
         # nb: band index
         # nk: index of k in sym.unfolded_kpts
-        # relationship: u_n({S|v}.T kbar) (G) = u_nkbar({S|v}.T G - G_S), apparently..
+        # relationship: u_n(kbar{S|tau}) (G) = u_nkbar(G{S|tau} - G_S), apparently..
+        # (S.T@G = G@S)
 
         sym_idx = self.irk_sym_map[nk]
         kbar_idx = self.irk_to_k_map[nk]
