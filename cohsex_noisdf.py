@@ -97,7 +97,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
         randlims = xp.matmul(bvec.T, xp.matmul(xp.diag(xp.divide(1.0, xp.asarray(wfn.kgrid))), xp.linalg.inv(bvec.T)))
 
         # BGW VORONOI CELL AVERAGE
-        randvals = xp.random.rand(1500000,3)
+        randvals = xp.random.rand(2500000,3)
         randcart = xp.einsum('ik,jk->ji', bvec.T, randvals)
         wrapped_cart = wrap_points_to_voronoi(randcart, bvec, xp, nmax=1)
 
@@ -294,9 +294,7 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         q_ext = xp.asarray(sym.unfolded_kpts[k_r] - sym.unfolded_kpts[k_l])
         q_rounded = xp.round(q_ext)
         q_ext = xp.where(xp.abs(q_ext - q_rounded) < 1e-8, q_rounded, q_ext)
-        # convention used in Deslippe 2012: qbz = qS + G_q, if no syms are used and W_q or V_q are stored in full 1BZ.
-        G_q = xp.asarray(q_ext%1.0 - q_ext, dtype=xp.int32)
-        # iq is the qvec index in sym.unfolded_kpts, not eps0/eps separated.
+        # iq is the qvec index in sym.unfolded_kpts, but iqbar/iqbareps will be the irrBZ indices used to get vcoul/epsinv. 
         iq = find_qpoint_index(q_ext, sym, tol=1e-6) 
         iq_cpu = iq.get()
 
@@ -329,14 +327,14 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         ######################################################
         # REORDERING OF V_qG ELEMENTS INTO EPS ORDER
         ######################################################
-        # V_qG stored in wfn.gvecs[iq] order, not eps[iq] order; need V_qG[0:G_screened_cutoff] in eps[iq] order for W.
+        # situation: W_qGG' = epsinv_qGG' * delta(G,G') v_qG
+        # V_qG stored in wfn.gvecs[iq] order, not eps.components[iq] order; need V_qG[0:G_screened_cutoff] in eps[iq] order for W.
         # V_qG comps currently associated with G_q_comps:
         G_qbar_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
-        vcoul_G_q_comps_compare = xp.dot(G_qbar_comps, xp.array([1, 1000, 1000000]))
+        vcoul_G_q_comps_compare = xp.dot(G_qbar_comps, xp.array([1, 3000, 9000000]))
 
-        #eps_G_qbar_comps = xp.asarray(eps.unfold_eps_comps(iqbareps, Sq, G_Sq),dtype=xp.int32)
         eps_G_qbar_comps = xp.asarray(eps.unfold_eps_comps(iqbareps, sym.sym_mats_k[0], np.array([0.,0.,0.])),dtype=xp.int32)
-        eps_G_qbar_comps_compare = xp.dot(eps_G_qbar_comps, xp.array([1, 1000, 1000000]))
+        eps_G_qbar_comps_compare = xp.dot(eps_G_qbar_comps, xp.array([1, 3000, 9000000]))
 
         perm = xp.argsort(vcoul_G_q_comps_compare)
         sorted_vcoul_compare = vcoul_G_q_comps_compare[perm]
@@ -352,12 +350,12 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         v_qG_epsorder[:] = xp.asarray(V_qG[iqbar][vcoul_eps_inds])
         #print(f"mean error in vcoul for qpt {iqbar}: {np.mean(v_qG_epsorder.get()[1:]-eps.vcoul[iqbareps,1:v_qG_epsorder.shape[0]])}")
         ######################################################
+
         # this is (eps-delta(GG')), which turns into W-v below.
         Wminv_qbarGG = xp.asarray(eps.get_eps_minus_delta_matrix(iqbareps),dtype=xp.complex128) 
         
         # the following replicates BGW's fixwings.f90: (since epsilon.x doesn't use minibzaverage for vcoul but sigma.x does)
         G0_idx = xp.int32(np.where(eps.gind_eps2rho[iqbareps,:100] == 0)[0][0])
-        #print(f"G0_idx: {G0_idx}")
         if iqbar == 0:
             # head
             Wminv_qbarGG[G0_idx,G0_idx] = wcoul0/v_qG_epsorder[G0_idx] - 1. # -1 because of delta
@@ -373,7 +371,6 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
             # code is difficult to interpret, but I think this is only for q0 with graphene screening.
             #fact = xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # (don't know what this is)
             #q0len = xp.float64(np.dot(eps0.qpts[0], wfn.bdot @ eps0.qpts[0]))
-
             #Wminv_qbarGG[G0_idx,:G0_idx] *= 8.*xp.pi * fact * (xp.pi/np.sqrt(wfn.bvec[2,2])) / (q0len*v_qG_epsorder[G0_idx]) # not squared for slab trunc
             #Wminv_qbarGG[G0_idx,G0_idx+1:] *= 8.*xp.pi * fact * (xp.pi/np.sqrt(wfn.bvec[2,2])) / (q0len*v_qG_epsorder[G0_idx]) # not squared for slab trunc
 
@@ -390,13 +387,9 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         #     print(f"Matrix elements: A[i,j]={Wminv_qbarGG[max_idx]:.2e}, A[j,i]*={Wminv_qbarGG[max_idx[1],max_idx[0]].conj():.2e}")
         #     raise ValueError("W matrix is not Hermitian!")
 
-
         eps_psiG_comps = xp.asarray(eps.unfold_eps_comps(iqbareps, Sq, G_Sq),dtype=xp.int32)
         vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki',Sq.astype(np.int32),wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis,:],dtype=xp.int32)
         psiG_eps_tmp = xp.zeros(eps_G_qbar_comps.shape[0],dtype=xp.complex128)
-
-        # the G components associated with the q point are shifted because V_q is stored in first BZ
-        #G_q_comps = xp.asarray(sym.get_gvecs_kfull(wfn,iq_cpu), dtype=xp.int32)# + G_q
 
         psi_l_rtot = psi_l_rtot.reshape(nb_l,nspinor,*wfn.fft_grid)
         psi_r_rtot = psi_r_rtot.reshape(nb_r,nspinor,*wfn.fft_grid)
@@ -413,11 +406,10 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         # this works because for large G vectors, the interaction is approx. unscreened: W(G,G') ~ delta(G,G')V(G)
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):
-
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.fftn(psiprod)
-                #psiprod *= xp.sqrt(1./xp.float64(n_rtot)) # standard normalization, but cancels with volume factor in def. of M_mn
+                psiprod = fftx.fft.fftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
 
+                # note that we use get the eps-order Gvecs from the fftbox for (W-v) and vcoul-order Gvecs for v.
                 psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
                 psiG_eps_tmp[:eps_psiG_comps.shape[0]] += psiprod[-eps_psiG_comps[:,0],-eps_psiG_comps[:,1],-eps_psiG_comps[:,2]]
 
@@ -489,6 +481,6 @@ if __name__ == "__main__":
     for i in range(21,31):
         sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
         sigma *= ryd2ev
-        print(f"{sigma.real:.9f} + {sigma.imag:.9f}j")
+        print(f"{sigma.real:.9f}") # + {sigma.imag:.9f}j") this is 0. i checked
 
 

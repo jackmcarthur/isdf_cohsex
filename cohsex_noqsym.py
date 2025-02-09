@@ -20,12 +20,42 @@ def get_bandranges(nv,nc,nband,nelec):
     return nvrange, ncrange, nsigmarange, n_fullrange, n_valrange
 
 
-def get_V_qG(wfn, sym, q0, xp, sys_dim):
+def wrap_points_to_voronoi(randcart, bvec,xp, nmax=1):
+    """
+    Helper function to get test q-points for mini-BZ average with correct voronoi cell.
+    """
+    # 1. Generate all candidate integer translations.
+    grid = xp.arange(-nmax, nmax+1)
+    # meshgrid in 3D; shape will be (3, M) with M = (2*nmax+1)**3 candidates.
+    shifts = xp.stack(xp.meshgrid(grid, grid, grid, indexing='ij'), axis=-1).reshape(-1, 3)
+    
+    # 2. Convert integer translations into Cartesian shift vectors.
+    #    Here bvec.T has lattice vectors as rows.
+    candidate_shifts = shifts @ bvec  # shape (M, 3)
+
+    # 3. For each point, compute its distance to each candidate image.
+    #    randcart[:, None, :] has shape (N,1,3), candidate_shifts[None,:,:] has shape (1,M,3)
+    diff = randcart[:, None, :] - candidate_shifts[None, :, :]  # shape (N, M, 3)
+    dists = xp.linalg.norm(diff, axis=2)  # shape (N, M)
+
+    # 4. Select, for each point, the candidate that minimizes the distance.
+    best_idx = xp.argmin(dists, axis=1)  # shape (N,)
+    best_shifts = candidate_shifts[best_idx]  # shape (N, 3)
+
+    # 5. Wrap the points by subtracting the chosen lattice translation.
+    wrapped = randcart - best_shifts
+    return wrapped
+
+def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
     # first: V(q,G,G') = 4\pi/|q+G|^2 \delta_{G,G'} * trunc part in 2D, (1-exp(-zc*kxy)*cos(kz*zc))
+    # (times one other factor, 1/(N_ktot * cell_volume))
     #print("vqg start")
+    print(q0)
     bvec = xp.asarray(wfn.blat * wfn.bvec, dtype=xp.float64)
     q0xp = xp.asarray(q0, dtype=xp.float64)
     qvec = xp.array([xp.float64(0.),xp.float64(0.),xp.float64(0.)])
+    zc = xp.pi/bvec[2,2] # note that the crystal z axis must align with the cartesian z axis
+
     #print("vqg qvec done")
     G_q_crys = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
     G_cart = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
@@ -40,48 +70,69 @@ def get_V_qG(wfn, sym, q0, xp, sys_dim):
     #print('trying vqg')
     # get V(q,G) array for all sym-reduced q
     if sys_dim == 2:
-        for iq in range(sym.nk_tot):
-            qvec = xp.asarray(sym.unfolded_kpts[iq])
+        for iq in range(wfn.nkpts):
+            qvec = xp.asarray(wfn.kpoints[iq])
             print(qvec.shape)
             if iq == 0:
                 qvec = q0xp
-            #print("vqg loop check a")
-            #print(f'Getting V_coul for q-vector {iq+1}: ({wfn.kpoints[iq,0]:.4f}, {wfn.kpoints[iq,1]:.4f}, {wfn.kpoints[iq,2]:.4f})',flush=True)
-            #print("vqg loop check b")
-            Gmax_q = ngks[sym.irk_to_k_map[iq]]
+
+            Gmax_q = ngks[iq]
 
             G_q_crys.fill(0.)
             G_cart.fill(0.)
             # this saves memory in the case of many kpts but requires a lot of HtoD transfers. revisit.
-            G_q_crys[:Gmax_q] = xp.asarray(sym.get_gvecs_kfull(wfn,iq).astype(np.float64),dtype=xp.float64) # stored as int32, trying to convert efficiently
-
-
-            #G_cart = xp.einsum('ik,jk->ji', bvec.T, G_q_crys + qvec) # note bvec includes blat
+            G_q_crys[:Gmax_q] = xp.asarray(wfn.get_gvec_nk(iq).astype(np.float64),dtype=xp.float64) # stored as int32, trying to convert efficiently
             G_cart[:Gmax_q] = xp.matmul(G_q_crys[:Gmax_q] + qvec, bvec) # @ is super slow, probably using numpy
+
             #print("done with gcart")
-            #V_qG[iq,:Gmax_q] = 4*xp.pi/ xp.einsum('ij,ij->i',G_cart,G_cart)[:Gmax_q]
             V_qG[iq,:Gmax_q] = xp.divide(4*xp.pi, xp.sum(G_cart*G_cart, axis=1)[:Gmax_q])
             #print("done with vqg no trunc")
             kxy = xp.linalg.norm(G_cart[:Gmax_q,:2], axis=1)
             kz = G_cart[:Gmax_q,2]
-            zc = xp.pi/bvec[2,2] # note that the crystal z axis must align with the cartesian z axis
             # NOT SURE WHY THERES AN EXTRA 2. 8PI NOT 4PI? I\neq J probably? but i compared to an epsmat.h5 file
             V_qG[iq,:Gmax_q] *= 2 * (1-xp.exp(-zc*kxy)*xp.cos(kz*zc))
 
-        # mini-BZ monte carlo integration for V_q=0,G=0
-        randvals = xp.random.rand(1000000,3) - 0.5
-        randlims = 1.0 / xp.asarray(wfn.kgrid)
-        randqs = randvals * randlims # set of non-grid qpts closer to q=0 than any other qpt
-        randqcart = xp.einsum('ik,jk->ji', bvec.T, randqs)
-        rand_vq = xp.divide(4*xp.pi, xp.einsum('ij,ij->i',randqcart,randqcart))
-        rand_vq *= 2 * (1 - xp.exp(-xp.pi/bvec[2,2] * xp.linalg.norm(randqcart[:,:2], axis=1)) * xp.cos(randqcart[:,2] * xp.pi/bvec[2,2]))
+        # mini-BZ voronoi monte carlo integration for V_q=0,G=0
+        randlims = xp.matmul(bvec.T, xp.matmul(xp.diag(xp.divide(1.0, xp.asarray(wfn.kgrid))), xp.linalg.inv(bvec.T)))
 
+        # BGW VORONOI CELL AVERAGE
+        randvals = xp.random.rand(2500000,3)
+        randcart = xp.einsum('ik,jk->ji', bvec.T, randvals)
+        wrapped_cart = wrap_points_to_voronoi(randcart, bvec, xp, nmax=1)
+
+        randqcart = xp.einsum('ik,jk->ji', randlims, wrapped_cart) # set of non-grid qpts closer to q=0 than any other qpt
+        #randqcart = xp.einsum('ik,jk->ji', bvec.T, randqs)
+        # DEBUG: possibly necessary in 2d?
+        randqcart[:,2] = 0.0
+        rand_vq = xp.divide(4*xp.pi, xp.einsum('ij,ij->i',randqcart,randqcart))
+        kxy_q0 = xp.linalg.norm(randqcart[:,:2],axis=1)
+        rand_vq *= 2 * (1. - xp.exp(-xp.pi/bvec[2,2] * kxy_q0) * xp.cos(randqcart[:,2] * xp.pi/bvec[2,2]))
         #print(f"V_q=0,G=0 from q0: {V_qG[0,0]:.4f}")
         V_qG[0,0] = xp.mean(rand_vq)
         print(f"V_q=0,G=0 from miniBZ monte carlo: {V_qG[0,0]:.4f}")
 
-    return V_qG
+        ##############################################################
+        # this is wcoul0 used in BGW/Common/fixwing.f90 (generated in minibzaverage.f90)
+        # equations here are: (Ismail-Beigi PRB 2006)
+        # W(q,G=G'=0) = epsinv(q,G=G'=0) * vc(q)
+        # 1/epsinv(q,G=G'=0) = 1 + vc(q)*f(q)
+        # f(q) = gamma |q|^2 exp(-a|q|) (a=0 in minibzaverage.f90)
 
+        q0len = xp.linalg.norm(xp.matmul(q0xp, bvec))
+        vc_qtozero = (1.-xp.exp(-q0len*zc))/q0len**2
+        gamma = xp.float64((1./xp.asarray(epshead.real, dtype=xp.float64) - 1.)/(q0len**2 * vc_qtozero))
+        alpha = xp.float64(0.)
+
+        rand_wq = (1. - xp.exp(-kxy_q0*zc))/(kxy_q0**2) # actually vc(q)
+        rand_wq = xp.divide(rand_wq, (1. + rand_wq * kxy_q0**2 * gamma *xp.exp(-alpha*kxy_q0)))
+        wcoul0 = 8*xp.pi*xp.mean(rand_wq)
+
+        print(f"W_q=0(G=G'=0) from miniBZ monte carlo: {wcoul0:.4f}")
+
+        fact = xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # won't work if nonuniform grid
+        V_qG *= fact
+        wcoul0 *= fact
+    return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
 
 
 def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
@@ -122,16 +173,18 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
                 # Place G-space coefficients
                 psi_rtot[ib,ispinor,gvecs_k_rot[:,0],gvecs_k_rot[:,1],gvecs_k_rot[:,2]] = psi_Gspace[ib,ispinor,:]
                 # Perform FFT
-                psi_rtot[ib,ispinor] = fftx.fft.ifftn(psi_rtot[ib,ispinor])
+                psi_rtot[ib,ispinor] = fftx.fft.fftn(psi_rtot[ib,ispinor])
+                # CHANGING FROM IFFTN, SEE BGW/SIGMA/MTXEL.F90
         
         # Normalize
-        psi_rtot *= xp.sqrt(n_rtot)
+        psi_rtot *= xp.sqrt(1./n_rtot)
         
         # Store results with new ordering
         if is_left:
             psi_rtot_out[k_idx] = xp.conj(psi_rtot)
         else:
             psi_rtot_out[k_idx] = psi_rtot
+
 
 def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
     """Find the interpolative separable density fitting representation."""
