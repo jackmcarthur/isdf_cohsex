@@ -94,7 +94,8 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
             V_qG[iq,:Gmax_q] *= 2 * (1-xp.exp(-zc*kxy)*xp.cos(kz*zc))
 
         # mini-BZ voronoi monte carlo integration for V_q=0,G=0
-        randlims = xp.matmul(bvec.T, xp.matmul(xp.diag(xp.divide(1.0, xp.asarray(wfn.kgrid))), xp.linalg.inv(bvec.T)))
+        k0_vol_crys = xp.diag(xp.divide(1.0, xp.asarray(wfn.kgrid)))
+        randlims = xp.matmul(bvec.T, xp.matmul(k0_vol_crys, xp.linalg.inv(bvec.T)))
 
         # BGW VORONOI CELL AVERAGE
         randvals = xp.random.rand(2500000,3)
@@ -134,7 +135,6 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
         V_qG *= fact
         wcoul0 *= fact
     return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
-
 
 
 def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
@@ -188,10 +188,11 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
             psi_rtot_out[k_idx] = psi_rtot
 
 
-def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r,V_qG,xp):
-    """Get the bare exchange self-energy, Sigma_X, for the 0th band in bandrange_r, for valbands = bandrange_l"""
+def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
+    """Get the exchange self-energy, Sigma_X, for the 0th band in bandrange_r, for valbands = bandrange_l"""
     # Get dimensions
     n_rtot = int(np.prod(wfn.fft_grid))
+
     nb_l = bandrange_l[1] - bandrange_l[0]
     nb_r = bandrange_r[1] - bandrange_r[0]
     nspinor = wfn.nspinor
@@ -201,12 +202,11 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r,V_qG,xp):
     psi_r_rtot_out = xp.zeros((sym.nk_tot, nb_r, nspinor, *wfn.fft_grid), dtype=xp.complex128)
 
     # Initialize temporary arrays for processing
-    # notice combined band/spinor index, so we can use a single cublas matmul call later
     psi_l_rtot = xp.zeros((nb_l*nspinor, *wfn.fft_grid), dtype=xp.complex128)
     psi_r_rtot = xp.zeros((nb_r*nspinor, *wfn.fft_grid), dtype=xp.complex128)
 
     # initialize array that holds M_mn(k,-q,-G) in reciprocal space
-    psiprod_flat = xp.zeros(int(wfn.ngkmax), dtype=xp.complex128)
+    psiG_vcoul_tmp = xp.zeros(int(wfn.ngkmax), dtype=xp.complex128)
 
     # fill psi_l/r_rtot_out with respective psi(*)_l/r(r) for all k
     fft_bandrange(wfn, sym, bandrange_l, True, psi_l_rtot_out, xp=cp)
@@ -225,33 +225,44 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r,V_qG,xp):
         q_ext = xp.asarray(sym.unfolded_kpts[k_r] - sym.unfolded_kpts[k_l])
         q_rounded = xp.round(q_ext)
         q_ext = xp.where(xp.abs(q_ext - q_rounded) < 1e-8, q_rounded, q_ext)
-        # convention used in Deslippe 2012: qbz = qS + G_q (no syms for now)
-        G_q = xp.asarray(q_ext%1.0 - q_ext, dtype=xp.int32)
-        iq = find_qpoint_index(q_ext, sym, tol=1e-6)
+        # iq is the qvec index in sym.unfolded_kpts
+        iq = find_qpoint_index(q_ext, sym, tol=1e-6) 
         iq_cpu = iq.get()
 
-        # the G components associated with the q point are shifted because V_q is stored in first BZ
-        G_q_comps = xp.asarray(sym.get_gvecs_kfull(wfn,iq_cpu), dtype=xp.int32) + G_q
+        ######################################################
+        # IF V_q SYMMETRY REDUCED:
+        ######################################################
+        # get qbar_idx, Sq and G_Sq such that q_ext = Sq @ q_ext + G_Sq.
+        iqbar = sym.irk_to_k_map[iq_cpu]
+        Sq = sym.sym_mats_k[sym.irk_sym_map[iq_cpu]] # now, qbar @ Sq = q
+        G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki',Sq.astype(np.int32),wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis,:],dtype=xp.int32)
+
 
         psi_l_rtot = psi_l_rtot.reshape(nb_l,nspinor,*wfn.fft_grid)
         psi_r_rtot = psi_r_rtot.reshape(nb_r,nspinor,*wfn.fft_grid)
             
         psi_l_rtot[:] = psi_l_rtot_out[k_l].reshape(nb_l,2,*wfn.fft_grid)
 
+        ######################################################
+        # MAIN SIGMA LOOP
+        ######################################################
         # here we get:
         # M_vn(k,-q,-G) = \sum_a FFT[u_vk-q,a(r) u_nk,a(r)]
-        # <nk|Sigma_X|nk> = \sum_G M_vn(k,-q,-G)^* V_q(G) M_vn(k,-q,-G)
+        # <nk|Sigma_X|nk> = \sum_G M_vn(k,-q,-G)^* V_q(G) M_vn(k,-q,G)
         for ib in range(psi_l_rtot.shape[0]):
-            psiprod_flat[:] = 0.0+0.0j
             for ispinor in range(2):
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.fftn(psiprod)
-                psiprod *= xp.sqrt(1./xp.float64(n_rtot))
+                psiprod = fftx.fft.fftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
 
-                psiprod_flat[:G_q_comps.shape[0]] += psiprod[-G_q_comps[:,0],-G_q_comps[:,1],-G_q_comps[:,2]]
+                # get G-space matrix elements
+                #G_q_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
+                psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
 
 
-            sigma_out += xp.sum(xp.conj(psiprod_flat) * V_qG[iq] * psiprod_flat)
+            # v contribution, all G vectors
+            sigma_out += xp.sum(xp.conj(psiG_vcoul_tmp) * V_qG[iqbar] * psiG_vcoul_tmp)
+            psiG_vcoul_tmp[:] = 0.0+0.0j
 
     return -sigma_out
 
@@ -331,10 +342,10 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         # V_qG stored in wfn.gvecs[iq] order, not eps.components[iq] order; need V_qG[0:G_screened_cutoff] in eps[iq] order for W.
         # V_qG comps currently associated with G_q_comps:
         G_qbar_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
-        vcoul_G_q_comps_compare = xp.dot(G_qbar_comps, xp.array([1, 3000, 9000000]))
+        vcoul_G_q_comps_compare = xp.dot(G_qbar_comps, xp.array([1, 1000, 1000000]))
 
         eps_G_qbar_comps = xp.asarray(eps.unfold_eps_comps(iqbareps, sym.sym_mats_k[0], np.array([0.,0.,0.])),dtype=xp.int32)
-        eps_G_qbar_comps_compare = xp.dot(eps_G_qbar_comps, xp.array([1, 3000, 9000000]))
+        eps_G_qbar_comps_compare = xp.dot(eps_G_qbar_comps, xp.array([1, 1000, 1000000]))
 
         perm = xp.argsort(vcoul_G_q_comps_compare)
         sorted_vcoul_compare = vcoul_G_q_comps_compare[perm]
@@ -416,7 +427,7 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
             # v contribution, all G vectors
             sigma_out += xp.sum(xp.conj(psiG_vcoul_tmp) * V_qG[iqbar] * psiG_vcoul_tmp)
             # W-v contribution, |G| < screened cutoff (conj on the right side because of fortran order)
-            sigma_out += xp.dot(psiG_eps_tmp,xp.matmul(Wminv_qbarGG,xp.conj(psiG_eps_tmp)))
+            #sigma_out += xp.dot(psiG_eps_tmp,xp.matmul(Wminv_qbarGG,xp.conj(psiG_eps_tmp)))
 
             psiG_vcoul_tmp[:] = 0.0+0.0j
             psiG_eps_tmp[:] = 0.0+0.0j
@@ -479,7 +490,8 @@ if __name__ == "__main__":
     V_qG, wcoul0 = get_V_qG(wfn, sym, eps0.qpts[0], xp, eps0.epshead, sys_dim)
     
     for i in range(21,31):
-        sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
+        #sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
+        sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
         sigma *= ryd2ev
         print(f"{sigma.real:.9f}") # + {sigma.imag:.9f}j") this is 0. i checked
 

@@ -185,6 +185,8 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         else:
             psi_rtot_out[k_idx] = psi_rtot
 
+# symmetry related problem: there are more q's than contained in the first BZ due to umklapp.
+# the solution seems to be to actually fit (k,k-q)
 
 def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
     """Find the interpolative separable density fitting representation."""
@@ -201,7 +203,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     psi_l_rmu_out = xp.zeros((sym.nk_tot, nb_l, nspinor*n_rmu), dtype=xp.complex128)
     psi_r_rmu_out = xp.zeros((sym.nk_tot, nb_r, nspinor*n_rmu), dtype=xp.complex128)
     
-    # Initialize temporary arrays for processing
+    # Initialize temporary arrays for processing (1 kpt, bands in bandrange) at a time
     # notice combined band/spinor index, so we can use a single cublas matmul call later
     psi_l_rtot = xp.zeros((nb_l*nspinor, *wfn.fft_grid), dtype=xp.complex128)
     psi_r_rtot = xp.zeros((nb_r*nspinor, *wfn.fft_grid), dtype=xp.complex128)
@@ -215,17 +217,16 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     zeta_q = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
     zeta_qG_mu = xp.zeros((n_rmu, int(wfn.ngkmax)), dtype=xp.complex128)
 
+    # # Initialize exp(iGr) phase factor arrays outside kq loops
+    # fft_nx, fft_ny, fft_nz = wfn.fft_grid
+    # fx = xp.arange(fft_nx, dtype=float)[None, :, None, None] / fft_nx  # Shape: (nx,1,1)
+    # fy = xp.arange(fft_ny, dtype=float)[None, None, :, None] / fft_ny  # Shape: (1,ny,1)
+    # fz = xp.arange(fft_nz, dtype=float)[None, None, None, :] / fft_nz  # Shape: (1,1,nz)
 
-    # Initialize exp(iGr) phase factor arrays outside kq loops
-    fft_nx, fft_ny, fft_nz = wfn.fft_grid
-    fx = xp.arange(fft_nx, dtype=float)[None, :, None, None] / fft_nx  # Shape: (nx,1,1)
-    fy = xp.arange(fft_ny, dtype=float)[None, None, :, None] / fft_ny  # Shape: (1,ny,1)
-    fz = xp.arange(fft_nz, dtype=float)[None, None, None, :] / fft_nz  # Shape: (1,1,nz)
-
-    # Pre-allocate phase arrays
-    px = xp.zeros((1,fft_nx, 1, 1), dtype=xp.complex128)
-    py = xp.zeros((1,1, fft_ny, 1), dtype=xp.complex128)
-    pz = xp.zeros((1,1, 1, fft_nz), dtype=xp.complex128)
+    # # Pre-allocate phase arrays
+    # px = xp.zeros((1,fft_nx, 1, 1), dtype=xp.complex128)
+    # py = xp.zeros((1,1, fft_ny, 1), dtype=xp.complex128)
+    # pz = xp.zeros((1,1, 1, fft_nz), dtype=xp.complex128)
 
     # initialize output V_q,mu,nu array
     V_qfullG = xp.zeros((int(wfn.ngkmax)), dtype=xp.complex128)
@@ -266,14 +267,14 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
             # if this is the case, we need to get the extended zone u_nk-q(r) from the stored u_nk-q+G(r),
             # since psiprod = psi^*_nk-q(r) psi_nk(r) = e^{iqr} u^*_nk-q(r) u_nk(r) only for the real k-q, not k-q+G.
             # to fix this, (map u^*_nk-q+G(r) -> u^*_nk-q(r)), we use the phase factor e^(iG.r).
-            Gkk = xp.asarray(k_l_full%1.0 - k_l_full, dtype=float)
-            # Calculate phase factors
-            xp.exp(-2j * xp.pi * float(Gkk[0]) * fx, out=px)
-            xp.exp(-2j * xp.pi * float(Gkk[1]) * fy, out=py)
-            xp.exp(-2j * xp.pi * float(Gkk[2]) * fz, out=pz)
-            psi_l_rtot *= px
-            psi_l_rtot *= py
-            psi_l_rtot *= pz
+            # Gkk = xp.asarray(k_l_full%1.0 - k_l_full, dtype=float)
+            # # Calculate phase factors
+            # xp.exp(-2j * xp.pi * float(Gkk[0]) * fx, out=px)
+            # xp.exp(-2j * xp.pi * float(Gkk[1]) * fy, out=py)
+            # xp.exp(-2j * xp.pi * float(Gkk[2]) * fz, out=pz)
+            # psi_l_rtot *= px
+            # psi_l_rtot *= py
+            # psi_l_rtot *= pz
             ##############################################
 
             psi_l_rmu = psi_l_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_l*2, -1)
@@ -310,7 +311,6 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
         #zeta_q = xp.multiply(xp.linalg.pinv(C_C_T.T) Z_C_T.T)
         
         print(f"zeta_q max value: {xp.amax(xp.abs(zeta_q))}")
-
 
         # fourier transform zeta_q to G space
         zeta_q = zeta_q.reshape(n_rmu, *wfn.fft_grid)
@@ -472,6 +472,8 @@ if __name__ == "__main__":
     nband = 30
 
     sys_dim = 2 # 3 for 3D, 2 for 2D
+
+    ryd2ev = 13.6056980659
 
     wfn = WFNReader("WFN.h5")
     wfnq = WFNReader("WFNq.h5")
