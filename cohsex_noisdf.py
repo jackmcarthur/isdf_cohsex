@@ -137,7 +137,43 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
     return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
 
 
-def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
+def get_V_soc(wfn, sym, xp, V_qG, current_i, spin_j):
+    factor = xp.complex128(1j*5.32513544E-5) # fine structure const. ^2
+    levi_civita = lambda i,j,k:(i-j)*(j-k)*(k-i)/2 # code golf
+
+    bvec = xp.asarray(wfn.blat * wfn.bvec, dtype=xp.float64)
+
+    #print("vqg qvec done")
+    G_q_cart = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
+    G_cart = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
+
+    V_soc = xp.zeros((sym.nk_tot, int(wfn.ngkmax)), dtype=xp.float64) # convert to complex128 later
+
+    for q_h in range(3):
+        perm = levi_civita(q_h,current_i,spin_j)
+        
+        if perm != 0:
+            for q_idx in range(sym.nk_tot):
+                q_red = sym.irk_to_k_map[q_idx]
+                vcoul_q = V_qG[q_idx]
+                G_q_cart.fill(0.)
+                Gmax_k = xp.int32(wfn.ngks[q_red])
+                qvec = xp.asarray(sym.unfolded_kpts[q_idx])
+                gvecs_q_rot = xp.asarray(sym.get_gvecs_kfull(wfn,q_idx))
+                xp.matmul(gvecs_q_rot[:Gmax_k] + qvec[None,:], bvec, out=G_q_cart[:Gmax_k]) # @ is super slow, probably using numpy
+                
+                # Extract k-component and multiply with wavefunction coefficients
+                h_component = xp.ascontiguousarray(G_q_cart[:Gmax_k,q_h])  # shape (Gmax_k,)
+
+
+# say for vectors in 1BZ kbar, k, we have a function f(kbar,G) and we want to know f(kbar@S+G_S,G).
+# the expression for this is: f(kbar@S+G_S,G) = f(kbar,(G-G_S)@Sinv)
+
+# current: sigma_k ~ sum_q M*_q(G)V_q(G)M_q(G)
+# do: sum_R G_R(r,r')W_R(r,r')
+
+
+def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp, current_k=None):
     """Process wavefunctions for all k-points in the full Brillouin zone.
     Args:
         wfn/sym: WFNReader/SymMaps objects
@@ -153,6 +189,13 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
 
     # Initialize temporary arrays
     psi_rtot = xp.zeros((nb, nspinor, *wfn.fft_grid), dtype=xp.complex128)
+
+    if current_k is not None:
+        # get cartesian gcomps
+        bvec = xp.asarray(wfn.blat * wfn.bvec, dtype=xp.float64)
+        kvec = xp.array([xp.float64(0.),xp.float64(0.),xp.float64(0.)])
+        G_k_cart = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
+
     
     # Loop over all k-points in full BZ
     for k_idx in range(sym.nk_tot):
@@ -167,7 +210,18 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         # Get wavefunction coefficients (symmetry unfolded)
         for ib, band_idx in enumerate(range(bandrange[0], bandrange[1])):
             psi_Gspace[ib, :, :] = xp.asarray(sym.get_cnk_fullzone(wfn,band_idx,k_idx))
-        
+
+        # if we want Jhat_k|nk> = \sum_G exp(i(k+G)r)[(k+G)u_nk(G)] for k=xyz
+        if current_k in (0, 1, 2): # won't accept True/False/None etc
+            G_k_cart.fill(0.)
+            Gmax_k = xp.int32(wfn.ngks[k_red])
+            kvec = xp.asarray(sym.unfolded_kpts[k_idx])
+            xp.matmul(gvecs_k_rot[:Gmax_k] + kvec[None,:], bvec, out=G_k_cart[:Gmax_k]) # @ is super slow, probably using numpy
+            
+            # Extract k-component and multiply with wavefunction coefficients
+            k_component = xp.ascontiguousarray(G_k_cart[:Gmax_k,current_k])  # shape (Gmax_k,)
+            psi_Gspace *= k_component[None,None,:]  # Broadcasting over (nb,nspinor,Gmax_k)
+
         # FFT to real space
         psi_rtot.fill(0.+0.j)
         for ib in range(nb):
@@ -186,6 +240,7 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
             psi_rtot_out[k_idx] = xp.conj(psi_rtot)
         else:
             psi_rtot_out[k_idx] = psi_rtot
+
 
 
 def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
@@ -236,6 +291,8 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
         iqbar = sym.irk_to_k_map[iq_cpu]
         Sq = sym.sym_mats_k[sym.irk_sym_map[iq_cpu]] # now, qbar @ Sq = q
         G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        #G_Sq = np.round((Sq @ wfn.kpoints[iqbar])%1.0 - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        # need M_q(-G) V_q(G) M_q(-G) but we have V_qbar(G) = V_q((G-Gq)Sinv)
         vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki',Sq.astype(np.int32),wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis,:],dtype=xp.int32)
 
 
@@ -315,7 +372,9 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         # get qbar_idx, Sq and G_Sq such that q_ext = Sq @ q_ext + G_Sq.
         iqbar = sym.irk_to_k_map[iq_cpu]
         Sq = sym.sym_mats_k[sym.irk_sym_map[iq_cpu]] # now, qbar @ Sq = q
-        G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        #G_Sq = np.round(sym.unfolded_kpts[iq_cpu] - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32) # if we needed q outside zone, but it seems fine
+
         #print(f"G_Sq for k_l = {k_l} and k_r = {k_r}: {G_Sq}")
         ######################################################
 
@@ -490,8 +549,8 @@ if __name__ == "__main__":
     V_qG, wcoul0 = get_V_qG(wfn, sym, eps0.qpts[0], xp, eps0.epshead, sys_dim)
     
     for i in range(21,31):
-        #sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
-        sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
+        sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
+        #sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
         sigma *= ryd2ev
         print(f"{sigma.real:.9f}") # + {sigma.imag:.9f}j") this is 0. i checked
 

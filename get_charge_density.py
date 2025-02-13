@@ -42,7 +42,7 @@ def perform_fft_3d(data_1d, gvecs, fft_grid):
     
     return fft_result
 
-def calculate_charge_density(wfn_reader, sym, nval=None, ncond=None):
+def calculate_charge_density(wfn, sym, nval=None, ncond=None):
     """
     Calculate charge density in real space from wavefunctions using WFNReader: goes over all occ. states c_nk(G),
     FFTs them to c_nk(R) (using GPU for FFTs when available via FFTX), squares and sums to get rho(R).
@@ -50,19 +50,14 @@ def calculate_charge_density(wfn_reader, sym, nval=None, ncond=None):
     n_sym is done on the GPU since symmetry operations over Gvecs can be parallelized.
     """
 
-    if cp.cuda.is_available():
-        sym.R_grid = cp.asarray(sym.R_grid)
-        sym.Rinv_grid = cp.asarray(sym.Rinv_grid)
-        sym.U_spinor = cp.asarray(sym.U_spinor)
-
-    fft_grid = xp.asarray(wfn_reader.fft_grid)
+    fft_grid = xp.asarray(wfn.fft_grid)
     # Convert fft_grid from numpy array to tuple of integers
     fft_grid_tuple = tuple(int(x) for x in fft_grid) #tuple(2*int(x) for x in fft_grid)
     # NOTE THE TWO! this is zero padding (ecutrho = 4*ecutwfc due to convolution in G-space)
     charge_density = xp.zeros(fft_grid_tuple, dtype=xp.double)
     
     # Loop over bands
-    nelec = int(np.sum(wfn_reader.occs[0,0]))
+    nelec = int(np.sum(wfn.occs[0,0]))
     if ncond is None and nval is None:
         bandrange = range(nelec) # 0 to nelec-1
     elif ncond is not None and nval is None:
@@ -74,35 +69,24 @@ def calculate_charge_density(wfn_reader, sym, nval=None, ncond=None):
 
     for ib in bandrange:  # Using first k-point's occupations
         # Loop over k-points
-        for ik in range(wfn_reader.nkpts):
+        for ik in range(1): # paper suggests only using k0
             # Get G-vectors for this k-point
-            gvecs_k = wfn_reader.get_gvec_nk(ik)
+            gvecs_k = sym.get_gvecs_kfull(wfn, ik)
             if cp.cuda.is_available():
                 gvecs_k = cp.asarray(gvecs_k)
 
             # Get wavefunction coefficients for this k-point and band
-            coeffs_kb = wfn_reader.get_cnk(ik, ib)
-
+            coeffs_kb = sym.get_cnk_fullzone(wfn, ib, ik)
             if cp.cuda.is_available():
                 coeffs_kb = cp.asarray(coeffs_kb)
 
-            # Loop over symmetry operations (on GPU if present)
-            for isym in sym.irk_sym_map[ik]: #[...[0]] for sym debug
-                if ib == 0: print(f"Unfolding k-point {ik+1} using symmetry operation {isym+1}.")
-                # rotation rule:
-                # u_{n,Rk}(G) = U_spinor_{a,b} u_{n,k,b}(Rinv G)
-                gvecs_k_rot = xp.einsum('ij,kj->ki', sym.Rinv_grid[isym], gvecs_k)
-                
-                # coeffs_kb: (2, 3577), U_spinor[isym]: (2, 2) -> result: (2, 3577)
-                coeffs_kb_rot = xp.einsum('ij,jk->ik', sym.U_spinor[isym], coeffs_kb)
-                
-                # Transform each spinor component to real space
-                for jspinor in range(2):
-                    spinor_density = perform_fft_3d(coeffs_kb_rot[jspinor], gvecs_k_rot, fft_grid_tuple)
-                    charge_density += (spinor_density*xp.conj(spinor_density)).real
+            # Transform each spinor component to real space
+            for jspinor in range(2):
+                spinor_density = perform_fft_3d(coeffs_kb[jspinor], gvecs_k, fft_grid_tuple)
+                charge_density += (spinor_density*xp.conj(spinor_density)).real
 
     # normalize charge density to n_electrons.
-    normrho = np.prod(wfn_reader.fft_grid)/np.prod(wfn_reader.kgrid)
+    normrho = np.prod(wfn.fft_grid)#/np.prod(wfn.kgrid)
     if cp.cuda.is_available():
         charge_density = cp.asarray(normrho) * charge_density
     else:
@@ -142,22 +126,22 @@ if __name__ == "__main__":
         xp = np
     
     print(f"Beginning charge density calculation. Using {xp.__name__} backend.")
-    nval = 26
-    ncond = 0
+    nval = 5
+    ncond = 5
     print(f"Including {ncond if ncond is not None else 'no'} conduction states and {nval if nval is not None else 'all'} valence states.")
 
     # Initialize WFNReader
-    wfn_reader = WFNReader(wfnpath)
+    wfn = WFNReader(wfnpath)
     
     # Initialize symmetry maps
-    sym = symmetry_maps.SymMaps(wfn_reader)
+    sym = symmetry_maps.SymMaps(wfn)
     
     # Analyze G-vectors before calculation
     print("\nAnalyzing G-vectors from wavefunction file:")
-    analyze_gvectors(wfn_reader.gvecs)
+    analyze_gvectors(wfn.gvecs)
     
     # Calculate charge density using the reader
-    charge_density = calculate_charge_density(wfn_reader, sym, nval=nval, ncond=ncond)
+    charge_density = calculate_charge_density(wfn, sym, nval=nval, ncond=ncond)
 
     print(f"\nTotal electron number: {xp.sum(charge_density)}")
 

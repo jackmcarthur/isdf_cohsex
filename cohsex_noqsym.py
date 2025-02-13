@@ -1,6 +1,7 @@
 import numpy as np
 import cupy as cp
 from wfnreader import WFNReader
+from epsreader import EPSReader
 import fftx
 import symmetry_maps
 #import matplotlib.pyplot as plt
@@ -254,8 +255,8 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
             psi_l_rtot = psi_l_rtot.reshape(nb_l*nspinor,*wfn.fft_grid)
             psi_r_rtot = psi_r_rtot.reshape(nb_r*nspinor,*wfn.fft_grid)
             
-            psi_l_rtot[:] = psi_l_rtot_out[k_l].reshape(nb_l*2,*wfn.fft_grid)
-            psi_r_rtot[:] = psi_r_rtot_out[k_r].reshape(nb_r*2,*wfn.fft_grid)
+            psi_l_rtot[:] = psi_l_rtot_out[k_l].reshape(nb_l*nspinor,*wfn.fft_grid)
+            psi_r_rtot[:] = psi_r_rtot_out[k_r].reshape(nb_r*nspinor,*wfn.fft_grid)
 
             ##############################################
             # phase factor for psi_l = psi_nk-q:
@@ -280,8 +281,8 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
             psi_l_rmu = psi_l_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_l*2, -1)
             psi_r_rmu = psi_r_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_r*2, -1)
 
-            psi_l_rtot = psi_l_rtot.reshape(nb_l*2, -1)
-            psi_r_rtot = psi_r_rtot.reshape(nb_r*2, -1)
+            psi_l_rtot = psi_l_rtot.reshape(nb_l*nspinor, -1)
+            psi_r_rtot = psi_r_rtot.reshape(nb_r*nspinor, -1)
             
             # Add contribution from this k,q pair to ZC^T and CC^T
             # combine band and spinor indices, so that decomp is of form \sum_\mu \zeta^q_\mu(r) \psi^*_mk-q,a(r_\mu) \psi_nk,b(r_\mu)
@@ -316,27 +317,35 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
         zeta_q = zeta_q.reshape(n_rmu, *wfn.fft_grid)
         for mu in xp.ndindex(zeta_q.shape[0]):
             zeta_q[mu] = fftx.fft.fftn(zeta_q[mu])
-        zeta_q *= xp.sqrt(1./xp.float64(n_rtot))  # normalize FFT
+        #zeta_q *= xp.sqrt(1./xp.float64(n_rtot))  # normalize FFT
         print(f"zeta norm post fft {np.linalg.norm(zeta_q[-1])}")
+
+
+        #####################################
+        # now, get this V_qG from the stored V_qbarG array by remapping G components.
+        #####################################
+        # get qbar_idx, Sq and G_Sq such that q_ext = Sq @ q_ext + G_Sq.
+        iqbar = sym.irk_to_k_map[iq]
+        Sq = sym.sym_mats_k[sym.irk_sym_map[iq]] # now, qbar @ Sq = q
+        G_Sq = np.round(sym.unfolded_kpts[iq] - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki',Sq.astype(np.int32),wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis,:],dtype=xp.int32)
+        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[iqbar,:vcoul_psiG_comps.shape[0]]
 
 
         # get correct G components
         #ng_q = int(wfn.ngk[sym.irk_to_k_map[iq]])
         zeta_qG_mu.fill(0.0+0.0j)
-        G_q_comps_cpu = sym.get_gvecs_kfull(wfn,iq)  # Convert to integers. DO -1 ?? TODO
-        G_q_comps = xp.asarray(G_q_comps_cpu).astype(xp.int32)  # Convert to integers. DO -1 ?? TODO
+        #G_q_comps_cpu = sym.get_gvecs_kfull(wfn,iq)  # Convert to integers. DO -1 ?? TODO
+        #G_q_comps = xp.asarray(G_q_comps_cpu).astype(xp.int32)  # Convert to integers. DO -1 ?? TODO
         for mu in range(zeta_q.shape[0]):
-            zeta_qG_mu[mu,:G_q_comps.shape[0]] = zeta_q[mu,G_q_comps[:,0],G_q_comps[:,1],G_q_comps[:,2]]
+            zeta_qG_mu[mu,:vcoul_psiG_comps.shape[0]] = zeta_q[mu,-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
         print(f"qpoint {iq}, zeta_q max value: {np.amax(np.abs(zeta_q))}, zeta_qG_mu max value: {np.amax(np.abs(zeta_qG_mu))}")
-        #####################################
-        # now, get this V_qG from the stored V_qbarG array by remapping G components.
-        #####################################
-        V_qfullG[:G_q_comps.shape[0]] = V_qG[iq,:G_q_comps.shape[0]]
+
         ###############################
 
         # Store zeta_qG_mu in transposed form initially (ngk, n_rmu)
-        temp = xp.multiply(V_qfullG[:, None], zeta_qG_mu.T)  # (ngk, n_rmu)
-        V_qmunu[iq] = xp.matmul(zeta_qG_mu.conj(), temp)  # (n_rmu, n_rmu)
+        temp = xp.multiply(V_qfullG[:,None], zeta_qG_mu.T)  # (ngk, n_rmu)
+        V_qmunu[iq] = xp.matmul(xp.conj(zeta_qG_mu), temp)  # (n_rmu, n_rmu)
 
     # shape of these is (nkpts, nbands, nspinor, nrmu)
     psi_l_rmu_out = psi_l_rtot_out[:,:,:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]
@@ -465,6 +474,32 @@ def write_arrays_to_h5(V_qmunu, Gkval_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma
         f.attrs['nk_red'] = sym.nk_red
         f.attrs['n_rmu'] = psi_l_rmu_out.shape[3]  # Number of centroids
 
+def find_qpoint_index(q_ext, sym, tol=1e-6):
+    """Find index of q-point in unfolded k-points list.
+    
+    Args:
+        q_ext: Vector of length 3 (crystal coordinates)
+        sym: SymMaps object containing unfolded_kpts
+        tol: Tolerance for floating point comparison
+    
+    Returns:
+        Index of matching q-point, or raises ValueError if not found
+    """
+    # Get fractional part of q_ext
+    q_frac = q_ext % 1.0
+    
+    # Calculate differences with all unfolded k-points
+    diffs = xp.abs(xp.asarray(sym.unfolded_kpts) - q_frac[None, :])
+    # Sum over coordinates and find minimum difference
+    total_diffs = xp.sum(diffs, axis=1)
+    min_diff = xp.min(total_diffs)
+    
+    if min_diff > tol:
+        raise ValueError(f"No matching q-point found within tolerance {tol}")
+    
+    return xp.argmin(total_diffs)
+
+
 
 if __name__ == "__main__":
     nval = 5
@@ -477,6 +512,8 @@ if __name__ == "__main__":
 
     wfn = WFNReader("WFN.h5")
     wfnq = WFNReader("WFNq.h5")
+    eps0 = EPSReader("eps0mat.h5")
+    eps = EPSReader("epsmat.h5")
     sym = symmetry_maps.SymMaps(wfn)
     q0 = wfnq.kpoints[0] - wfn.kpoints[0]
     if np.linalg.norm(q0) > 1e-6:
@@ -497,9 +534,9 @@ if __name__ == "__main__":
         centroid_indices[centroid_indices[:, i] == wfn.fft_grid[i], i] = 0
 
     ####################################
-    # 1.) get (truncated in 2D) coulomb potential v_q(G)
+    # 1.) get (truncated in 2D) coulomb potential v_q(G) and W_q=0(G=G'=0) element
     ####################################
-    V_qG = get_V_qG(wfn, sym, q0, xp, sys_dim)
+    V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
 
 
     ####################################
@@ -525,7 +562,7 @@ if __name__ == "__main__":
     print(V_qmunu[0,:4,:4])
     print(sigma_x_kbar_munu.shape)
     print(sigma_x_kbar_ij[0,0])
-    write_sigma_to_file(sigma_x_kbar_ij, "eqp0_noqsym.dat")
+    write_sigma_to_file(ryd2ev*sigma_x_kbar_ij, "eqp0_noqsym.dat")
 
     # Call this function after your calculations
     write_arrays_to_h5(V_qmunu, Gkval_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, sigma_x_kbar_ij)

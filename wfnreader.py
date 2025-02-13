@@ -72,7 +72,7 @@ class WFNReader:
 
     def __del__(self):
         """Clean up by closing the file when the object is destroyed."""
-        if self._file is not None:
+        if hasattr(self, '_file') and self._file is not None:
             self._file.close()
 
     def get_cnk(self, ik, ib):

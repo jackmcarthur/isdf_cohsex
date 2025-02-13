@@ -235,7 +235,7 @@ if __name__ == "__main__":
     print(f"Original shape: {rho.shape}")  # (25, 25, 100)
     print(f"New shape: {rho_interp.shape}")  # (15, 15, 60)
 
-    labels, centroids, centroid_z_history, steps_taken = weighted_kmeans_cupy(avec, rho, N_k=250)
+    labels, centroids, centroid_z_history, steps_taken = weighted_kmeans_cupy(avec, rho, N_k=400)
     
     # Save fractional coordinates to file
     np.savetxt('centroids_frac.txt', 
