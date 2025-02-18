@@ -305,7 +305,7 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
         # MAIN SIGMA LOOP
         ######################################################
         # here we get:
-        # M_vn(k,-q,-G) = \sum_a FFT[u_vk-q,a(r) u_nk,a(r)]
+        # M_vn(k,-q,G) = \sum_a FFT[u_vk-q,a(r) u_nk,a(r)]
         # <nk|Sigma_X|nk> = \sum_G M_vn(k,-q,-G)^* V_q(G) M_vn(k,-q,G)
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):

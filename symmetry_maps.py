@@ -34,9 +34,6 @@ class SymMaps:
         # change the map from "k_full points indexed by full grid position" to "k_full points indexed by irr. k-point position"
         self.kpoint_map_ibz_ids = self.kpoint_map_irrbz_ids(wfn, self.unfolded_kpts)
 
-        #self.irk_sym_map = get_sym_indices_from_kgrid('kgrid.log')
-
-        #self.irk_to_k_map, self.irk_sym_map = self.find_symmetry_operations(wfn, self.kpoint_map, self.unfolded_kpts)
         self.irk_to_k_map, self.irk_sym_map = self.find_symmetry_ops_simple(wfn, self.kpoint_map, self.unfolded_kpts)
         
         
@@ -62,6 +59,36 @@ class SymMaps:
         self.kq_map = self.get_kminusq_map(wfn, self.unfolded_kpts)
         self.kqfull_map = self.get_kminusqfull_map(wfn, self.unfolded_kpts)
         self.kfull_symmap = self.get_kfull_symmap(wfn, self.unfolded_kpts)
+
+
+        # the above kq maps are for inputting some k and some q and getting k-q in the 1BZ, but it is actually necessary to store W_q on q outside 1BZ
+        # As such, the following functions are for inputting some k and some k' and getting the relevant q outside 1BZ
+        kx, ky, kz = np.meshgrid(np.arange(wfn.kgrid[0]), 
+                        np.arange(wfn.kgrid[1]), 
+                        np.arange(wfn.kgrid[2]), 
+                        indexing='ij')
+        self.kvecs_asints = np.stack([kx.flatten(), ky.flatten(), kz.flatten()], axis=1) # kpoints * kgrid (kpoints as integers)
+
+        # Generate q-vectors using broadcasting
+        qpt_vecs = self.kvecs_asints[:, None, :] - self.kvecs_asints[None, :, :]  # Automatic broadcasting
+
+        # Find unique q-vectors (already vectorized)
+        self.all_unfolded_qpts = np.unique(qpt_vecs.reshape(-1, 3), axis=0)
+
+        # Generate indices using vectorized operations
+        self.all_unfolded_qpt_ids = np.zeros((len(self.kvecs_asints), len(self.kvecs_asints)), dtype=np.int32)
+        # This is still a loop but operates on whole arrays at once
+        for i, q in enumerate(self.all_unfolded_qpts):
+            mask = (qpt_vecs == q).all(axis=2)
+            self.all_unfolded_qpt_ids[mask] = i
+
+
+    def get_qpt_id_from_kkp(self, kidx, kpidx):
+        # meant to return the unique q idx of kp-k, so that sym.all_unfolded_qpts[qpt_id] = kp-k
+        kpminkvec = self.kvecs_asints[kpidx] - self.kvecs_asints[kidx]
+        return np.where(np.all(self.all_unfolded_qpts == kpminkvec, axis=1))[0][0]
+
+        
 
     def get_syms_from_kgridlog(self,kgridfname):
         # return the identity + the set of sym_matrices that unfold the k-points

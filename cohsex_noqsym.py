@@ -189,7 +189,7 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
 # symmetry related problem: there are more q's than contained in the first BZ due to umklapp.
 # the solution seems to be to actually fit (k,k-q)
 
-def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
+def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
     n_rtot = int(np.prod(wfn.fft_grid))
@@ -308,7 +308,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
         #print(f"C_C_T condition number: {np.linalg.cond(C_C_T.get())}")
         #print(f"Z_C_T condition number: {np.linalg.cond(Z_C_T.get())}")
         #zeta_q = xp.linalg.solve(C_C_T.T, Z_C_T.T)
-        zeta_q = xp.linalg.lstsq(C_C_T.T, Z_C_T.T,rcond=-1)[0]
+        zeta_q = xp.linalg.lstsq(C_C_T.T, Z_C_T.T,rcond=-1)[0] # currne
         #zeta_q = xp.multiply(xp.linalg.pinv(C_C_T.T) Z_C_T.T)
         
         print(f"zeta_q max value: {xp.amax(xp.abs(zeta_q))}")
@@ -543,7 +543,7 @@ if __name__ == "__main__":
     # 2.) get interpolative separable density fitting basis functions zeta_q,mu(r)
     # 3.) only store V_q,mu,nu(G) in memory so no need to store all zeta_q,mu(r)
     ####################################
-    V_qmunu, psi_l_rmu_out, psi_r_rmu_out, zeta_qfinal_test = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
+    V_qmunu, psi_l_rmu_out, psi_r_rmu_out, zeta_qfinal_test = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
 
 
     #################################### 

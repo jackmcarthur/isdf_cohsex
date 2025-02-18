@@ -207,9 +207,9 @@ def get_interp_vectors_allq(wfn, wfnq, sym, centroid_indices, bandrange_l, bandr
             
             # apply phase factors to get the real psi_l
             psi_l_rtot[:] = psi_l_rtot_out[k_l_1bz].reshape(nb_l*2,*wfn.fft_grid)
-            #psi_l_rtot *= px
-            #psi_l_rtot *= py
-            #psi_l_rtot *= pz
+            psi_l_rtot *= px
+            psi_l_rtot *= py
+            psi_l_rtot *= pz
             psi_r_rtot[:] = psi_r_rtot_out[k_r].reshape(nb_r*2,*wfn.fft_grid)
 
             psi_l_rmu = psi_l_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_l*2, -1)
