@@ -229,11 +229,10 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp, current_k=N
                 # Place G-space coefficients
                 psi_rtot[ib,ispinor,gvecs_k_rot[:,0],gvecs_k_rot[:,1],gvecs_k_rot[:,2]] = psi_Gspace[ib,ispinor,:]
                 # Perform FFT
-                psi_rtot[ib,ispinor] = fftx.fft.fftn(psi_rtot[ib,ispinor])
-                # CHANGING FROM IFFTN, SEE BGW/SIGMA/MTXEL.F90
+                psi_rtot[ib,ispinor] = fftx.fft.ifftn(psi_rtot[ib,ispinor])
         
         # Normalize
-        psi_rtot *= xp.sqrt(1./n_rtot)
+        psi_rtot *= n_rtot # was xp.sqrt(1.0/n_rtot) with fftn
         
         # Store results with new ordering
         if is_left:
@@ -310,7 +309,7 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.fftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
+                psiprod = fftx.fft.ifftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
 
                 # get G-space matrix elements
                 #G_q_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
@@ -477,7 +476,7 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.fftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
+                psiprod = fftx.fft.ifftn(psiprod) # CHANGING FROM FFTN, SEE BGW/SIGMA/MTXEL.F90
 
                 # note that we use get the eps-order Gvecs from the fftbox for (W-v) and vcoul-order Gvecs for v.
                 psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
@@ -549,8 +548,8 @@ if __name__ == "__main__":
     V_qG, wcoul0 = get_V_qG(wfn, sym, eps0.qpts[0], xp, eps0.epshead, sys_dim)
     
     for i in range(21,31):
-        sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
-        #sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
+        #sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
+        sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
         sigma *= ryd2ev
         print(f"{sigma.real:.9f}") # + {sigma.imag:.9f}j") this is 0. i checked
 

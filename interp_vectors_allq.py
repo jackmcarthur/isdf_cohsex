@@ -35,6 +35,19 @@ def fft_bandrange(wfn, sym, bandrange, centroid_indices, is_left, psi_rtot_out, 
     
     # Initialize temporary arrays
     psi_rtot = xp.zeros((nb, 2, *wfn.fft_grid), dtype=xp.complex128)
+
+    #########################################
+        # Initialize exp(iGr) phase factor arrays outside kq loops
+    fft_nx, fft_ny, fft_nz = wfn.fft_grid
+    fx = xp.arange(fft_nx, dtype=float)[None, :, None, None] / fft_nx  # Shape: (nx,1,1)
+    fy = xp.arange(fft_ny, dtype=float)[None, None, :, None] / fft_ny  # Shape: (1,ny,1)
+    fz = xp.arange(fft_nz, dtype=float)[None, None, None, :] / fft_nz  # Shape: (1,1,nz)
+
+    # Pre-allocate phase arrays
+    px = xp.zeros((1,fft_nx, 1, 1), dtype=xp.complex128)
+    py = xp.zeros((1,1, fft_ny, 1), dtype=xp.complex128)
+    pz = xp.zeros((1,1, 1, fft_nz), dtype=xp.complex128)
+    #########################################
     
     # Loop over all k-points in full BZ
     for k_idx in range(sym.nk_tot):
@@ -69,6 +82,16 @@ def fft_bandrange(wfn, sym, bandrange, centroid_indices, is_left, psi_rtot_out, 
         
         # Normalize
         psi_rtot *= xp.sqrt(n_rtot)
+
+        #####################################
+        xp.exp(-2j * xp.pi * float(sym.unfolded_kpts[k_idx][0]) * fx, out=px)
+        xp.exp(-2j * xp.pi * float(sym.unfolded_kpts[k_idx][1]) * fy, out=py)
+        xp.exp(-2j * xp.pi * float(sym.unfolded_kpts[k_idx][2]) * fz, out=pz)
+        psi_rtot *= px
+        psi_rtot *= py
+        psi_rtot *= pz
+        #####################################
+        
         
         # Store results with new ordering
         if is_left:
