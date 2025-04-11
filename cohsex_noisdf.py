@@ -309,11 +309,11 @@ def get_sigma_x_exact(wfn, sym, k_r, bandrange_l, bandrange_r, V_qG, xp):
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.ifftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
-
+                psiprod = fftx.fft.fftn(psiprod) # not normalized! (would normally do *= 1/sqrt(N_FFT))
+                psiprod *= 1./n_rtot
                 # get G-space matrix elements
                 #G_q_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
-                psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
+                psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[vcoul_psiG_comps[:,0],vcoul_psiG_comps[:,1],vcoul_psiG_comps[:,2]]
 
 
             # v contribution, all G vectors
@@ -476,16 +476,16 @@ def get_sigma_sex_exact(wfn, sym, epsmat, eps0mat, k_r, bandrange_l, bandrange_r
         for ib in range(psi_l_rtot.shape[0]):
             for ispinor in range(2):
                 psiprod = psi_l_rtot[ib,ispinor] * psi_r_rtot[0,ispinor]
-                psiprod = fftx.fft.ifftn(psiprod) # CHANGING FROM FFTN, SEE BGW/SIGMA/MTXEL.F90
-
+                psiprod = fftx.fft.fftn(psiprod) # CHANGING FROM FFTN, SEE BGW/SIGMA/MTXEL.F90
+                psiprod *= 1./n_rtot
                 # note that we use get the eps-order Gvecs from the fftbox for (W-v) and vcoul-order Gvecs for v.
-                psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[-vcoul_psiG_comps[:,0],-vcoul_psiG_comps[:,1],-vcoul_psiG_comps[:,2]]
-                psiG_eps_tmp[:eps_psiG_comps.shape[0]] += psiprod[-eps_psiG_comps[:,0],-eps_psiG_comps[:,1],-eps_psiG_comps[:,2]]
+                psiG_vcoul_tmp[:vcoul_psiG_comps.shape[0]] += psiprod[vcoul_psiG_comps[:,0],vcoul_psiG_comps[:,1],vcoul_psiG_comps[:,2]]
+                psiG_eps_tmp[:eps_psiG_comps.shape[0]] += psiprod[eps_psiG_comps[:,0],eps_psiG_comps[:,1],eps_psiG_comps[:,2]]
 
             # v contribution, all G vectors
             sigma_out += xp.sum(xp.conj(psiG_vcoul_tmp) * V_qG[iqbar] * psiG_vcoul_tmp)
             # W-v contribution, |G| < screened cutoff (conj on the right side because of fortran order)
-            #sigma_out += xp.dot(psiG_eps_tmp,xp.matmul(Wminv_qbarGG,xp.conj(psiG_eps_tmp)))
+            sigma_out += xp.dot(psiG_eps_tmp,xp.matmul(Wminv_qbarGG,xp.conj(psiG_eps_tmp)))
 
             psiG_vcoul_tmp[:] = 0.0+0.0j
             psiG_eps_tmp[:] = 0.0+0.0j
@@ -548,8 +548,8 @@ if __name__ == "__main__":
     V_qG, wcoul0 = get_V_qG(wfn, sym, eps0.qpts[0], xp, eps0.epshead, sys_dim)
     
     for i in range(21,31):
-        #sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
-        sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
+        sigma = get_sigma_sex_exact(wfn, sym, eps, eps0, 0, n_valrange, (i,i+1), V_qG, wcoul0, xp)
+        #sigma = get_sigma_x_exact(wfn, sym, 0, n_valrange, (i,i+1), V_qG, cp)
         sigma *= ryd2ev
         print(f"{sigma.real:.9f}") # + {sigma.imag:.9f}j") this is 0. i checked
 
