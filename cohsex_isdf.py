@@ -21,7 +21,6 @@ def get_bandranges(nv,nc,nband,nelec):
     n_valrange = [0, int(nelec)]
     return nvrange, ncrange, nsigmarange, n_fullrange, n_valrange
 
-
 def wrap_points_to_voronoi(randcart, bvec,xp, nmax=1):
     """
     Helper function to get test q-points for mini-BZ average with correct voronoi cell.
@@ -370,8 +369,6 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
         # TODO: ascontiguousarray here?
         temp = xp.multiply(V_qfullG[:,None], zeta_qG_mu.T)  # (ngk, n_rmu)
         V_qmunu[*qvec_nonneg] = xp.matmul(xp.conj(zeta_qG_mu), temp)  # (n_rmu, n_rmu)
-        #minqvec = [-q for q in qvec] # THIS MAY NOT BE TRUE FOR NON-REAL V(q,G)
-        #V_qmunu[*minqvec] = xp.conj(V_qmunu[*qvec]).T # zeta(-q) = zeta*(q)
 
         print(f"qpoint {iq} done")
 
@@ -384,7 +381,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
 
 # G_(kab)(mu,nu,t=0) = \sum_mn psi^*_mk(r_mu) * psi_nk(r_nu) (n restricted to range of psi_rmu)
 # k goes over kfull
-def get_Gk_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None):
+def get_G_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None, return_R=False):
     # using xp to wrap cupy/numpy, calculate:
     # take the matrix psi with shape (nkpts, nbands, nspinor, nrmu) and do:
     # G_{k,a,b}(mu,nu) = \sum_mnab psi^*_mka(r_mu) * psi_nkb(r_nu) (matmul)
@@ -408,22 +405,22 @@ def get_Gk_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None):
         psi_r = xp.conj(psi_r_rmu[k_idx,:,:,:]).reshape(-1,n_spinmu)
         Gk_mu_nu_0[0,*kpt] = xp.matmul(xp.matmul(psi_l, Gkij[0,k_idx]), psi_r)
 
-    return Gk_mu_nu_0.reshape(1,*wfn.kgrid,wfn.nspinor,n_rmu,wfn.nspinor,n_rmu)
+    Gk_mu_nu_0 = Gk_mu_nu_0.reshape(1,*wfn.kgrid,wfn.nspinor,n_rmu,wfn.nspinor,n_rmu)
 
+    if not return_R:
+        return Gk_mu_nu_0
+    else:
+        return get_G_R(Gk_mu_nu_0)
 
-# get the real-space sigma_\alpha\beta(r,r'(omega))
-# options being X, SX, COH
-def get_sigma_x_mu_nu(wfn, sym, Gk_mu_nu_0, V_mu_nu, xp):
-    # sigma_kbar,ab = \sum_(set of k_i = kbar S_i) \sum_qbar G_(k-qbar,ab)(mu,nu) V_qbar(mu,nu)
-    # trying in real space! \sum_R G_R W_R. woohoo
-    n_rmu = Gk_mu_nu_0.shape[5]
-    n_spinmu = Gk_mu_nu_0.shape[4]*Gk_mu_nu_0.shape[5]
-    kgrid = tuple(wfn.kgrid.astype(int))
+def get_G_R(Gk_mu_nu):
+    n_rmu = Gk_mu_nu.shape[5]
+    n_spinor = Gk_mu_nu.shape[4]
+    kgrid = tuple(Gk_mu_nu.shape[1:4])
 
     # indices here are (nfreq, nkx, nky, nkz, nspin, nrmu, nspin, nrmu)
     # Reorder axes to have kgrid last (batch fft mem locality)
     G_k = xp.ascontiguousarray(
-        Gk_mu_nu_0.reshape(1,*kgrid,-1).transpose(0,4,1,2,3)  
+        Gk_mu_nu.reshape(1,*kgrid,-1).transpose(0,4,1,2,3)  
         ).reshape(-1, *kgrid) 
     # shape (nfreq*nspin*nrmu*nspin*nrmu, *kgrid)
 
@@ -431,7 +428,31 @@ def get_sigma_x_mu_nu(wfn, sym, Gk_mu_nu_0, V_mu_nu, xp):
     # G doesn't need to be because G_(k+G)(r,r') = G_k(r,r') (bloch fn).
     Gfftplan = cupyx.scipy.fftpack.get_fft_plan(G_k, axes=(1,2,3)) 
     G_R = cupyx.scipy.fftpack.ifftn(G_k, axes=(1,2,3), plan=Gfftplan, overwrite_x=True)
-    G_R = G_R.reshape(1,wfn.nspinor,n_rmu,wfn.nspinor,n_rmu,*kgrid)
+    G_R = G_R.reshape(1,n_spinor,n_rmu,n_spinor,n_rmu,*kgrid)
+
+    return G_R
+
+# get the real-space sigma_\alpha\beta(r,r'(omega))
+# options being X, SX, COH
+def get_sigma_x_mu_nu(wfn, sym, G_R, V_mu_nu, xp):
+    # sigma_kbar,ab = \sum_(set of k_i = kbar S_i) \sum_qbar G_(k-qbar,ab)(mu,nu) V_qbar(mu,nu)
+    # trying in real space! \sum_R G_R W_R. woohoo
+    n_rmu = G_R.shape[2]
+    n_spinmu = G_R.shape[1]*G_R.shape[2]
+    kgrid = tuple(G_R.shape[5:])
+
+    # indices here are (nfreq, nkx, nky, nkz, nspin, nrmu, nspin, nrmu)
+    # Reorder axes to have kgrid last (batch fft mem locality)
+    # G_k = xp.ascontiguousarray(
+    #     G_mu_nu_0.reshape(1,*kgrid,-1).transpose(0,4,1,2,3)  
+    #     ).reshape(-1, *kgrid) 
+    # shape (nfreq*nspin*nrmu*nspin*nrmu, *kgrid)
+
+    # V is umklapped to have kpts in FFT ordering [0,...nk/2,-nk/2+1,...].
+    # G doesn't need to be because G_(k+G)(r,r') = G_k(r,r') (bloch fn).
+    #Gfftplan = cupyx.scipy.fftpack.get_fft_plan(G_k, axes=(1,2,3)) 
+    #G_R = cupyx.scipy.fftpack.ifftn(G_k, axes=(1,2,3), plan=Gfftplan, overwrite_x=True)
+    #G_R = G_R.reshape(1,wfn.nspinor,n_rmu,wfn.nspinor,n_rmu,*kgrid)
 
     V_q = xp.ascontiguousarray(
         V_mu_nu.reshape(-1,n_rmu,n_rmu).transpose(1,2,0)
@@ -481,6 +502,7 @@ def get_sigma_x_kij(psi_l_rmu, psi_r_rmu, sigma_kbar, xp):
         sigma_kij[k_idx,:,:] = xp.matmul(xp.matmul(psi_l, sigma_ktmp), psi_r)
 
     return sigma_kij
+
 
 def write_sigma_to_file(sigma_kij, filename="eqp0.dat"):
     print(f"sigma_kij dtype before writing: {sigma_kij.dtype}")
@@ -615,16 +637,16 @@ if __name__ == "__main__":
     #################################### 
     # 4.) get G_k(r_mu,r_nu) for valence bands
     ####################################
-    Gkval_mu_nu = get_Gk_mu_nu(wfn, psi_l_rmu_out, psi_l_rmu_out, n_rmu, xp)
+    G_R_val_mu_nu = get_G_mu_nu(wfn, psi_l_rmu_out, psi_l_rmu_out, n_rmu, xp, return_R=True)
 
 
     ####################################
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
     ####################################
-    sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, Gkval_mu_nu, V_qmunu, xp)
+    sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, V_qmunu, xp)
     sigma_x_kbar_ij = get_sigma_x_kij(psi_r_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, xp)
 
 
     write_sigma_to_file(ryd2ev*sigma_x_kbar_ij, "eqp0_noqsym.dat")
     # Call this function after your calculations
-    write_arrays_to_h5(V_qmunu, Gkval_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, sigma_x_kbar_ij)
+    write_arrays_to_h5(V_qmunu, G_R_val_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, sigma_x_kbar_ij)
