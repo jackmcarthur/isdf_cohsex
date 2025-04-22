@@ -10,6 +10,7 @@ import sys
 import numpy as np
 import symmetry_maps               # imported as requested
 from wfnreader import WFNReader
+from scipy.special import roots_laguerre
 
 # Try to import CuPy; fall back to NumPy
 try:
@@ -29,6 +30,19 @@ class GL_window:
         self.end_ind = end_ind
         self.start_energy = wfn.energies[start_ind]
         self.end_energy = wfn.energies[end_ind]
+
+class WindowInfo:
+    def __init__(self, emin, emax):
+        self.emin = emin
+        self.emax = emax
+
+class WindowPair:
+    def __init__(self, val_index, cond_index, val_window, cond_window, epsq):
+        self.val = val_index
+        self.cond = cond_index
+        self.ntau = round(N_tau_window(cond_window, val_window, epsq))
+        self.tau_i, self.w_i = roots_laguerre(self.ntau)
+        self.z_lm = np.sqrt((cond_window.emax - val_window.emin) / (cond_window.emin - val_window.emax))
 
 def compute_dos(wfn_file, n_points=2000):
     """
@@ -102,8 +116,10 @@ def find_optimal_partitions(energies, n_windows):
     min_cost = float('inf')
     best_partitions = partitions
 
+    max_iterations = n_points * 2
+    since_accepted = 0
     # Local search over partition points
-    for _ in range(300):  # Number of iterations can be adjusted
+    for _ in range(max_iterations):  # Number of iterations can be adjusted
         for i in range(1, n_windows):
             # Try moving the partition up or down by one state
             for delta in [-1, 1]:
@@ -116,6 +132,11 @@ def find_optimal_partitions(energies, n_windows):
                 if cost < min_cost:
                     min_cost = cost
                     best_partitions = new_partitions
+                    since_accepted = 0
+                else:
+                    since_accepted += 1
+                    if since_accepted > n_windows*2:
+                        break
 
     return best_partitions
 
@@ -194,7 +215,7 @@ def minimize_cost_fn(wfn, epsq, max_val_windows=8, max_cond_windows=8):
     print("-" * (8 + 8 * optimal_cond_windows))
 
     for iv in range(optimal_val_windows):
-        row = f"{iv+1}"
+        row = f"{iv+1}\t"
         v0, v1 = val_e[optimal_v_partitions[iv]], val_e[optimal_v_partitions[iv+1]-1]
         for jc in range(optimal_cond_windows):
             c0, c1 = cond_e[optimal_c_partitions[jc]], cond_e[optimal_c_partitions[jc+1]-1]
@@ -208,6 +229,60 @@ def minimize_cost_fn(wfn, epsq, max_val_windows=8, max_cond_windows=8):
     print("-" * (8 + 8 * optimal_cond_windows))
 
     return cost_matrix, window_bounds
+
+def get_window_info(epsq, wfn):
+    """
+    Calculate window information for valence and conduction bands.
+
+    Args:
+        epsq (float): Epsilon squared value.
+        wfn (WFNReader): Wavefunction reader object.
+
+    Returns:
+        dict: A dictionary with 'val', 'cond', and 'pairs' keys containing window information.
+    """
+    # Use minimize_cost_fn to find the optimal number of windows
+    cost_matrix, window_bounds = minimize_cost_fn(wfn, epsq, max_val_windows=8, max_cond_windows=8)
+
+    # Find the optimal configuration
+    min_cost_idx = np.unravel_index(np.argmin(cost_matrix, axis=None), cost_matrix.shape)
+    optimal_val_windows, optimal_cond_windows = min_cost_idx[0] + 1, min_cost_idx[1] + 1
+    optimal_v_partitions = window_bounds[(optimal_val_windows, optimal_cond_windows)][0]
+    optimal_c_partitions = window_bounds[(optimal_val_windows, optimal_cond_windows)][1]
+
+    # flatten & sort all band energies
+    all_e = wfn.energies.flatten()
+    sorted_e = np.sort(all_e)
+    # get Fermi level
+    efermi = np.amax(wfn.energies[:, :, int(np.sum(wfn.occs[0,0]) - 1)])
+
+    # split into valence (<= efermi) and conduction (> efermi)
+    val_e = sorted_e[sorted_e <= efermi]
+    cond_e = sorted_e[sorted_e >  efermi]
+
+    # Create a structure to hold window information
+    windows = {'val': {}, 'cond': {}, 'pairs': {}}
+
+    # Fill valence window information
+    for iv in range(optimal_val_windows):
+        v0, v1 = val_e[optimal_v_partitions[iv]], val_e[optimal_v_partitions[iv+1]-1]
+        windows['val'][str(iv+1)] = WindowInfo(v0, v1)
+
+    # Fill conduction window information
+    for jc in range(optimal_cond_windows):
+        c0, c1 = cond_e[optimal_c_partitions[jc]], cond_e[optimal_c_partitions[jc+1]-1]
+        windows['cond'][str(jc+1)] = WindowInfo(c0, c1)
+
+    # Create pairs
+    pair_index = 1
+    for iv in range(optimal_val_windows):
+        val_window = windows['val'][str(iv+1)]
+        for jc in range(optimal_cond_windows):
+            cond_window = windows['cond'][str(jc+1)]
+            windows['pairs'][str(pair_index)] = WindowPair(str(iv+1), str(jc+1), val_window, cond_window, epsq)
+            pair_index += 1
+
+    return windows
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

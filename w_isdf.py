@@ -42,3 +42,14 @@ def get_static_w_q(chi_R, V_qmunu, sym, xp):
     # w_q(omega) = (1-v_q chi_q)^{-1} v_q
 
     w_q = xp.zeros_like(chi_R) # has spinor components
+
+
+
+
+if __name__ == "__main__":
+    wfn = WFNReader("WFN.h5")
+    sym = symmetry_maps.SymmetryMap(wfn.structure)
+    G_R = wfn.get_G_R()
+    chi_q = get_static_chi_q(wfn, sym, G_R, xp)
+    print(chi_q.shape)
+

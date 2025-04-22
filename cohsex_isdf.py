@@ -135,7 +135,6 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
         wcoul0 *= fact
     return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
 
-
 def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
     """
     Get psi_nk(r) for all k-points in the full Brillouin zone.
@@ -203,7 +202,6 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
             psi_rtot_out[k_idx] = xp.conj(psi_rtot)
         else:
             psi_rtot_out[k_idx] = psi_rtot
-
 
 def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
     """Find the interpolative separable density fitting representation."""
@@ -607,6 +605,8 @@ if __name__ == "__main__":
         print(f'Using q0 = ({q0[0]:.5f}, {q0[1]:.5f}, {q0[2]:.5f})')
 
     nvrange, ncrange, nsigmarange, n_fullrange, n_valrange = get_bandranges(nval, ncond, nband, wfn.nelec)
+    nvplussigrange = (min(n_valrange),max(nsigmarange))
+    ncplussigrange = (min(nsigmarange),max(n_fullrange))
 
     # Load centroids
     centroids_frac = np.loadtxt('centroids_frac.txt')
@@ -631,9 +631,11 @@ if __name__ == "__main__":
     # 2.) get interpolative separable density fitting basis functions zeta_q,mu(r)
     # 3.) only store V_q,mu,nu in memory so no need to store all zeta_q,mu(r)
     ####################################
-    V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
-
-
+    #V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
+    # here we will use the windows to instead fit every band at once; easier for chi.
+    V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
+    psi_l_rmu_out = psi_l_rmu_out.slice('nbnd',xp.s_[0:n_valrange[1]])
+    psi_r_rmu_out = psi_r_rmu_out.slice('nbnd',xp.s_[:n_valrange[1]])
     #################################### 
     # 4.) get G_k(r_mu,r_nu) for valence bands
     ####################################
