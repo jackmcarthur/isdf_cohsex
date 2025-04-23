@@ -435,7 +435,7 @@ def get_sigma_x_mu_nu(wfn, sym, G_R, V_q, xp):
 
     V_q = V_q.kgrid_to_last()
     V_q.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
-    V_q.fft_kgrid()
+    V_q.ifft_kgrid()
     V_q.unjoin('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
     #V_q.join('nspinor1','nrmu1')
     #V_q.join('nspinor2','nrmu2')
