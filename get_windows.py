@@ -2,8 +2,8 @@
 """
 get_windows.py
 
-Compute a simple Gaussian‑broadened density of states (DOS)
-from a WFNReader file.
+Compute optimal energy windows for the conduction and valence bands (minimizing total quadrature points)
+for the O(N^3) polarizability and self energy calculations given in Kim, Martyna, and Ismail-Beigi, PRB 101, 035139 (2020).
 """
 
 import sys
@@ -32,17 +32,17 @@ class GL_window:
         self.end_energy = wfn.energies[end_ind]
 
 class WindowInfo:
-    def __init__(self, emin, emax):
-        self.emin = emin
-        self.emax = emax
+    def __init__(self, start_energy, end_energy):
+        self.start_energy = start_energy
+        self.end_energy = end_energy
 
 class WindowPair:
-    def __init__(self, val_index, cond_index, val_window, cond_window, epsq):
-        self.val = val_index
-        self.cond = cond_index
+    def __init__(self, val_window, cond_window, epsq):
+        self.val_window = val_window
+        self.cond_window = cond_window
         self.ntau = round(N_tau_window(cond_window, val_window, epsq))
         self.tau_i, self.w_i = roots_laguerre(self.ntau)
-        self.z_lm = np.sqrt((cond_window.emax - val_window.emin) / (cond_window.emin - val_window.emax))
+        self.z_lm = np.sqrt((cond_window.end_energy - val_window.start_energy) / (cond_window.start_energy - val_window.end_energy))
 
 def compute_dos(wfn_file, n_points=2000):
     """
@@ -239,7 +239,7 @@ def get_window_info(epsq, wfn):
         wfn (WFNReader): Wavefunction reader object.
 
     Returns:
-        dict: A dictionary with 'val', 'cond', and 'pairs' keys containing window information.
+        list: A list of WindowPair objects containing window information.
     """
     # Use minimize_cost_fn to find the optimal number of windows
     cost_matrix, window_bounds = minimize_cost_fn(wfn, epsq, max_val_windows=8, max_cond_windows=8)
@@ -260,29 +260,19 @@ def get_window_info(epsq, wfn):
     val_e = sorted_e[sorted_e <= efermi]
     cond_e = sorted_e[sorted_e >  efermi]
 
-    # Create a structure to hold window information
-    windows = {'val': {}, 'cond': {}, 'pairs': {}}
+    # Create a list to hold window pairs
+    window_pairs = []
 
-    # Fill valence window information
+    # Fill valence and conduction window information and create pairs
     for iv in range(optimal_val_windows):
         v0, v1 = val_e[optimal_v_partitions[iv]], val_e[optimal_v_partitions[iv+1]-1]
-        windows['val'][str(iv+1)] = WindowInfo(v0, v1)
-
-    # Fill conduction window information
-    for jc in range(optimal_cond_windows):
-        c0, c1 = cond_e[optimal_c_partitions[jc]], cond_e[optimal_c_partitions[jc+1]-1]
-        windows['cond'][str(jc+1)] = WindowInfo(c0, c1)
-
-    # Create pairs
-    pair_index = 1
-    for iv in range(optimal_val_windows):
-        val_window = windows['val'][str(iv+1)]
+        val_window = WindowInfo(v0, v1)
         for jc in range(optimal_cond_windows):
-            cond_window = windows['cond'][str(jc+1)]
-            windows['pairs'][str(pair_index)] = WindowPair(str(iv+1), str(jc+1), val_window, cond_window, epsq)
-            pair_index += 1
+            c0, c1 = cond_e[optimal_c_partitions[jc]], cond_e[optimal_c_partitions[jc+1]-1]
+            cond_window = WindowInfo(c0, c1)
+            window_pairs.append(WindowPair(val_window, cond_window, epsq))
 
-    return windows
+    return window_pairs
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
@@ -293,34 +283,23 @@ if __name__ == "__main__":
     energies, dos, efermi = compute_dos(wfn_file, n_points=200)
     print(f"Fermi level: {efermi:.4f}")
 
-    # plt.figure(figsize=(6,4))
-    # plt.plot(energies, dos, lw=1.5)
-    # plt.axvline(efermi, color='k', linestyle='--', label='Fermi level')
-    # plt.xlabel("Energy (a.u.)")
-    # plt.ylabel("DOS (arb. units)")
-    # plt.title(f"Gaussian‑broadened DOS: {wfn_file}")
-    # plt.tight_layout()
-    # plt.show()
+    # Example ε(q) value; adjust as needed
+    epsq = 0.01
 
-    # ------------------------------------------------
-    # 3D‐plot of the cost vs (n_valence_windows, n_cond_windows)
-    # ------------------------------------------------
-    epsq = 0.01   # example ε_q² value; adjust as needed
-    # re‐read WFN to pass into cost routine
+    # Re-read WFN to pass into cost routine
     wfn = WFNReader(wfn_file)
-    cost_mat, _ = minimize_cost_fn(wfn, epsq,
-                                   max_val_windows=8,
-                                   max_cond_windows=8)
 
-    # prepare meshgrid (1..8, 1..8)
-    X, Y = np.meshgrid(np.arange(1,9), np.arange(1,9), indexing='ij')
-    fig = plt.figure(figsize=(6,5))
-    ax  = fig.add_subplot(111, projection='3d')
-    surf = ax.plot_surface(X, Y, cost_mat,
-                           cmap='viridis', edgecolor='k', alpha=0.8)
-    ax.set_xlabel('# valence windows')
-    ax.set_ylabel('# conduction windows')
-    ax.set_zlabel('Cost')
-    ax.set_title('Windowing cost surface')
-    fig.colorbar(surf, shrink=0.5, aspect=8, label='Cost')
-    plt.show() 
+    # Get window information
+    window_pairs = get_window_info(epsq, wfn)
+
+    # Print table of window information
+    print("\nWindow Information:")
+    print(f"{'Pair':<10}{'Valence Emin':<15}{'Valence Emax':<15}{'Cond Emin':<15}{'Cond Emax':<15}{'z_lm':<10}{'tau_i':<20}{'w_i':<20}")
+    print("-" * 120)
+
+    for i, pair in enumerate(window_pairs, start=1):
+        val_window = pair.val_window
+        cond_window = pair.cond_window
+        print(f"{i:<10}{val_window.start_energy:<15.4f}{val_window.end_energy:<15.4f}{cond_window.start_energy:<15.4f}{cond_window.end_energy:<15.4f}{pair.z_lm:<10.4f}{pair.tau_i[:5]}...{pair.tau_i[-5:]}{pair.w_i[:5]}...{pair.w_i[-5:]}")
+
+    # Continue with the rest of the main code... 

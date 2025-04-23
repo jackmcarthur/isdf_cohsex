@@ -45,7 +45,7 @@ class LabeledArray:
 
     def __init__(self, data=None, axes=None, shape=None, dtype=np.complex128, joined_axes=None):
         if data is not None:
-            assert axes is not None #and len(axes) == data.ndim
+            assert axes is not None
             self.data = data
             self.xp = cp.get_array_module(data)
             self.axes = list(axes)
@@ -57,8 +57,10 @@ class LabeledArray:
             self.axes = list(axes)
         else:
             raise ValueError("Either data+axes or axes+shape must be provided.")
+            
+        # Initialize original_sizes with current shape
+        self.original_sizes = {ax: self.data.shape[i] for i, ax in enumerate(self.axes)}
         self.joined_axes = joined_axes or {}
-        self.original_sizes = {}
 
     def shape(self, axis_name=None):
         if axis_name is None:
@@ -128,11 +130,11 @@ class LabeledArray:
         if sorted(idxs) != list(range(min(idxs), max(idxs)+1)):
             raise ValueError("Axes must be contiguous to join.")
 
-        # Store original sizes
-        original_sizes = [self.data.shape[i] for i in idxs]
-        self.original_sizes['*'.join(axes_to_join)] = original_sizes
+        # Store original sizes using individual axis names
+        for ax, idx in zip(axes_to_join, idxs):
+            self.original_sizes[ax] = self.data.shape[idx]
 
-        new_dim = int(np.prod(original_sizes))
+        new_dim = int(np.prod([self.data.shape[i] for i in idxs]))
         new_shape = (
             self.data.shape[:idxs[0]] +
             (new_dim,) +
@@ -153,13 +155,10 @@ class LabeledArray:
             raise ValueError(f"Axes {original_axes} are not currently joined.")
 
         idx = self.axes.index(joined_name)
-        joined_size = self.data.shape[idx]
-
-        # Use stored original sizes
-        if joined_name not in self.original_sizes:
-            raise ValueError(f"Original sizes for {joined_name} not found.")
-        recovered_shapes = self.original_sizes[joined_name]
-
+        
+        # Get original sizes from stored individual axis sizes
+        recovered_shapes = [self.original_sizes[ax] for ax in original_axes]
+        
         new_shape = (
             self.data.shape[:idx] +
             tuple(recovered_shapes) +
@@ -168,7 +167,6 @@ class LabeledArray:
         self.data = self.data.reshape(new_shape)
         self.axes = self.axes[:idx] + list(original_axes) + self.axes[idx+1:]
         del self.joined_axes[joined_name]
-        del self.original_sizes[joined_name]
 
     def fft_kgrid(self):
         self._apply_fft_inplace(['nkx', 'nky', 'nkz'], inverse=False)
