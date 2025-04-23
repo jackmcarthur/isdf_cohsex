@@ -41,7 +41,7 @@ print(A.axes)  # unchanged in A
 """
 
 class LabeledArray:
-    __slots__ = ['data', 'axes', 'xp', 'joined_axes']
+    __slots__ = ['data', 'axes', 'xp', 'joined_axes', 'original_sizes']
 
     def __init__(self, data=None, axes=None, shape=None, dtype=np.complex128, joined_axes=None):
         if data is not None:
@@ -58,6 +58,17 @@ class LabeledArray:
         else:
             raise ValueError("Either data+axes or axes+shape must be provided.")
         self.joined_axes = joined_axes or {}
+        self.original_sizes = {}
+
+    def shape(self, axis_name=None):
+        if axis_name is None:
+            return self.data.shape
+        else:
+            if axis_name in self.axes:
+                return self.data.shape[self.axes.index(axis_name)]
+            else:
+                raise ValueError(f"Axis '{axis_name}' not found in axes {self.axes}")
+
 
     def transpose(self, *new_order):
         if set(new_order) != set(self.axes):
@@ -117,7 +128,11 @@ class LabeledArray:
         if sorted(idxs) != list(range(min(idxs), max(idxs)+1)):
             raise ValueError("Axes must be contiguous to join.")
 
-        new_dim = int(np.prod([self.data.shape[i] for i in idxs]))
+        # Store original sizes
+        original_sizes = [self.data.shape[i] for i in idxs]
+        self.original_sizes['*'.join(axes_to_join)] = original_sizes
+
+        new_dim = int(np.prod(original_sizes))
         new_shape = (
             self.data.shape[:idxs[0]] +
             (new_dim,) +
@@ -140,11 +155,10 @@ class LabeledArray:
         idx = self.axes.index(joined_name)
         joined_size = self.data.shape[idx]
 
-        # For safety, assume uniform size distribution
-        num_splits = len(original_axes)
-        # This assumes original sizes are equal; for full generality you could store original sizes in `joined_axes`
-        size = int(joined_size ** (1 / num_splits))
-        recovered_shapes = [size] * num_splits
+        # Use stored original sizes
+        if joined_name not in self.original_sizes:
+            raise ValueError(f"Original sizes for {joined_name} not found.")
+        recovered_shapes = self.original_sizes[joined_name]
 
         new_shape = (
             self.data.shape[:idx] +
@@ -154,6 +168,7 @@ class LabeledArray:
         self.data = self.data.reshape(new_shape)
         self.axes = self.axes[:idx] + list(original_axes) + self.axes[idx+1:]
         del self.joined_axes[joined_name]
+        del self.original_sizes[joined_name]
 
     def fft_kgrid(self):
         self._apply_fft_inplace(['nkx', 'nky', 'nkz'], inverse=False)
