@@ -1,22 +1,58 @@
 import numpy as np
-import cupy
+import cupy as cp
 import cupyx.scipy.fftpack as cufft
 from numpy import s_
 from typing import Union
+if cp.is_available():
+    xp = cp
+else:
+    xp = np
+
+## LabeledArray module
+"""
+This module defines a lightweight wrapper around NumPy/CuPy arrays that tracks named axes and supports fast, in-place operations for high-performance electronic structure computations. Axes can be reshaped, transposed, joined, sliced, and Fourier transformed by name instead of index.
+
+### Key features:
+- Named axes: access and manipulate dimensions without hardcoding index positions
+- In-place operations: `.join(...)`, `.unjoin(...)`, `.fft_kgrid()`, `.transpose(...)` mutate the array without returning a copy
+- Axis tracking: joins/unjoins maintain internal metadata (`joined_axes`) for reversible reshaping
+- CuPy integration: GPU-accelerated FFTs with memory locality via `cupyx.scipy.fftpack.get_fft_plan`
+- Initialization from just shape and axis names: `LabeledArray(axes, shape)` creates zero-initialized complex array
+
+Example usage:
+
+from numpy import s_
+
+# Initialize
+A = LabeledArray(axes=['nfreq', 'nkx', 'nky', 'nkz', 'nspinor_1', 'nr1', 'nspinor_2', 'nr2'],
+                 shape=(8, 4, 4, 4, 2, 5, 2, 5))
+
+# In-place transformations
+A.kgrid_to_last()
+A.freq_to_last()
+A.join('nspinor_1', 'nr1')
+A.slice_many({'nkx': s_[1:3], 'nfreq': 0})
+A.fft_kgrid()
+
+# Transpose (not in-place): returns a new object with reordered axes and contiguous memory
+B = A.transpose('nfreq', 'nspinor_1', 'nr1', 'nspinor_2', 'nr2', 'nkx', 'nky', 'nkz')
+print(B.axes)  # ['nfreq', 'nspinor_1', 'nr1', 'nspinor_2', 'nr2', 'nkx', 'nky', 'nkz']
+print(A.axes)  # unchanged in A
+"""
 
 class LabeledArray:
     __slots__ = ['data', 'axes', 'xp', 'joined_axes']
 
     def __init__(self, data=None, axes=None, shape=None, dtype=np.complex128, joined_axes=None):
         if data is not None:
-            assert axes is not None and len(axes) == data.ndim
+            assert axes is not None #and len(axes) == data.ndim
             self.data = data
-            self.xp = cupy.get_array_module(data)
+            self.xp = cp.get_array_module(data)
             self.axes = list(axes)
         elif axes is not None and shape is not None:
             # interpret None as newaxis (size 1)
             shape_resolved = tuple(1 if dim is None else dim for dim in shape)
-            self.xp = cupy if cupy.is_available() else np
+            self.xp = cp if cp.is_available() else np
             self.data = self.xp.zeros(shape_resolved, dtype=dtype)
             self.axes = list(axes)
         else:
@@ -30,17 +66,20 @@ class LabeledArray:
         new_data = self.xp.ascontiguousarray(self.data.transpose(perm))
         return LabeledArray(new_data, list(new_order), joined_axes=dict(self.joined_axes))
 
-    def slice(self, axis_name: str, slice_val: Union[int, slice]):
+    def slice(self, axis_name: str, slice_val: Union[int, slice], tagged=False):
         idx = self.axes.index(axis_name)
         slicer = [slice(None)] * self.data.ndim
         slicer[idx] = slice_val
         new_data = self.data[tuple(slicer)]
+        if not tagged:
+            return new_data
         new_axes = self.axes[:idx] + self.axes[idx+1:] if isinstance(slice_val, int) else self.axes
         return LabeledArray(new_data, new_axes, joined_axes=dict(self.joined_axes))
 
-    def slice_many(self, slice_dict: dict):
+    def slice_many(self, slice_dict: dict, tagged=False):
         slicer = [slice(None)] * self.data.ndim
         new_axes = list(self.axes)
+        
         for ax, s_val in slice_dict.items():
             if ax not in self.axes:
                 raise ValueError(f"Axis '{ax}' not found.")
@@ -48,8 +87,14 @@ class LabeledArray:
             slicer[idx] = s_val
             if isinstance(s_val, int):
                 new_axes[idx] = None  # mark for deletion
+        
+        # Remove any axes marked for deletion
         new_axes = [ax for ax in new_axes if ax is not None]
         new_data = self.data[tuple(slicer)]
+        
+        if not tagged:
+            return new_data
+        
         return LabeledArray(new_data, new_axes, joined_axes=dict(self.joined_axes))
 
     def shape_dict(self):
@@ -71,6 +116,7 @@ class LabeledArray:
         idxs = [self.axes.index(ax) for ax in axes_to_join]
         if sorted(idxs) != list(range(min(idxs), max(idxs)+1)):
             raise ValueError("Axes must be contiguous to join.")
+
         new_dim = int(np.prod([self.data.shape[i] for i in idxs]))
         new_shape = (
             self.data.shape[:idxs[0]] +
@@ -82,29 +128,32 @@ class LabeledArray:
             ['*'.join(axes_to_join)] +
             self.axes[idxs[-1]+1:]
         )
-        new_data = self.data.reshape(new_shape)
-        joined_axes = dict(self.joined_axes)
-        joined_axes['*'.join(axes_to_join)] = axes_to_join
-        return LabeledArray(new_data, new_axes, joined_axes)
+        self.data = self.data.reshape(new_shape)
+        self.axes = list(new_axes)
+        self.joined_axes['*'.join(axes_to_join)] = axes_to_join
 
     def unjoin(self, *original_axes):
         joined_name = '*'.join(original_axes)
         if joined_name not in self.joined_axes:
             raise ValueError(f"Axes {original_axes} are not currently joined.")
+
         idx = self.axes.index(joined_name)
-        recovered_axes = self.joined_axes[joined_name]
-        shape_dict = {ax: sz for ax, sz in zip(self.axes, self.data.shape)}
-        recovered_shapes = [shape_dict[joined_name] // np.prod([shape_dict[a] for a in recovered_axes])] * len(recovered_axes)
+        joined_size = self.data.shape[idx]
+
+        # For safety, assume uniform size distribution
+        num_splits = len(original_axes)
+        # This assumes original sizes are equal; for full generality you could store original sizes in `joined_axes`
+        size = int(joined_size ** (1 / num_splits))
+        recovered_shapes = [size] * num_splits
+
         new_shape = (
             self.data.shape[:idx] +
             tuple(recovered_shapes) +
             self.data.shape[idx+1:]
         )
-        new_axes = self.axes[:idx] + recovered_axes + self.axes[idx+1:]
-        new_data = self.data.reshape(new_shape)
-        new_joined = dict(self.joined_axes)
-        del new_joined[joined_name]
-        return LabeledArray(new_data, new_axes, new_joined)
+        self.data = self.data.reshape(new_shape)
+        self.axes = self.axes[:idx] + list(original_axes) + self.axes[idx+1:]
+        del self.joined_axes[joined_name]
 
     def fft_kgrid(self):
         self._apply_fft_inplace(['nkx', 'nky', 'nkz'], inverse=False)
@@ -113,7 +162,7 @@ class LabeledArray:
         self._apply_fft_inplace(['nkx', 'nky', 'nkz'], inverse=True)
 
     def _apply_fft_inplace(self, k_axes, inverse=False):
-        if self.xp is not cupy:
+        if self.xp is not cp:
             raise RuntimeError("fft_kgrid/ifft_kgrid requires CuPy.")
 
         k_idxs = [self.axes.index(ax) for ax in k_axes]

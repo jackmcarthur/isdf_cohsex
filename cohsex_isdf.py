@@ -5,6 +5,8 @@ from epsreader import EPSReader
 import fftx
 import symmetry_maps
 import cupyx.scipy.fftpack
+from tagged_arrays import LabeledArray
+import h5py
 #import matplotlib.pyplot as plt
 if cp.cuda.is_available():
     xp = cp
@@ -203,7 +205,7 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         else:
             psi_rtot_out[k_idx] = psi_rtot
 
-def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r,V_qG,xp):
+def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
     n_rtot = int(np.prod(wfn.fft_grid))
@@ -214,19 +216,26 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     kgridgpu = xp.asarray(wfn.kgrid, dtype=xp.int32)
 
     # Initialize output arrays with (nk, nb) ordering
-    psi_l_rtot_out = xp.zeros((sym.nk_tot, nb_l, nspinor, *wfn.fft_grid), dtype=xp.complex128)
-    psi_r_rtot_out = xp.zeros((sym.nk_tot, nb_r, nspinor, *wfn.fft_grid), dtype=xp.complex128)
-    psi_l_rmu_out = xp.zeros((sym.nk_tot, nb_l, nspinor*n_rmu), dtype=xp.complex128)
-    psi_r_rmu_out = xp.zeros((sym.nk_tot, nb_r, nspinor*n_rmu), dtype=xp.complex128)
-    
+    psi_rtot_names = ['nk', 'nb', 'nspinor', 'rx', 'ry', 'rz']
+    psi_rmu_names = ['nk', 'nb', 'nspinor', 'rmu']
+    psi_l_rtot_out = LabeledArray(shape=(sym.nk_tot, nb_l, nspinor, *wfn.fft_grid), axes=psi_rtot_names)
+    psi_r_rtot_out = LabeledArray(shape=(sym.nk_tot, nb_r, nspinor, *wfn.fft_grid), axes=psi_rtot_names)
+    psi_l_rmu_out = LabeledArray(shape=(sym.nk_tot, nb_l, nspinor, n_rmu), axes=psi_rmu_names)
+    psi_r_rmu_out = LabeledArray(shape=(sym.nk_tot, nb_r, nspinor, n_rmu), axes=psi_rmu_names)
+    psi_l_rmu_out.join('nspinor', 'rmu')
+    psi_r_rmu_out.join('nspinor', 'rmu')
+
     # Initialize temporary arrays for processing (1 kpt, bands in bandrange) at a time
-    # notice combined band/spinor index, so we can use a single cublas matmul call later
-    psi_l_rtot = xp.zeros((nb_l*nspinor, *wfn.fft_grid), dtype=xp.complex128)
-    psi_r_rtot = xp.zeros((nb_r*nspinor, *wfn.fft_grid), dtype=xp.complex128)
-    psi_l_rmu = xp.zeros((nb_l*nspinor, n_rmu), dtype=xp.complex128)
-    psi_r_rmu = xp.zeros((nb_r*nspinor, n_rmu), dtype=xp.complex128)
-    psi_l_rmuT = xp.zeros((n_rmu, nb_l*nspinor), dtype=xp.complex128)
-    psi_r_rmuT = xp.zeros((n_rmu, nb_r*nspinor), dtype=xp.complex128)
+    psi_l_rtot = xp.zeros((nb_l * nspinor, *wfn.fft_grid), dtype=xp.complex128)
+    psi_r_rtot = xp.zeros((nb_r * nspinor, *wfn.fft_grid), dtype=xp.complex128)
+    psi_l_rmu = xp.zeros((nb_l * nspinor, n_rmu), dtype=xp.complex128)
+    psi_r_rmu = xp.zeros((nb_r * nspinor, n_rmu), dtype=xp.complex128)
+    psi_l_rmuT = xp.zeros((n_rmu, nb_l * nspinor), dtype=xp.complex128)
+    psi_r_rmuT = xp.zeros((n_rmu, nb_r * nspinor), dtype=xp.complex128)
+
+    # Initialize P_l, P_r
+    P_l = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
+    P_r = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
 
     # Initialize ZC^T and CC^T
     ZCT = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
@@ -243,80 +252,69 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     fz = xp.arange(fft_nz, dtype=float)[None, None, None, :] / fft_nz  # Shape: (1,1,nz)
 
     # Pre-allocate phase arrays
-    px = xp.zeros((1,fft_nx, 1, 1), dtype=xp.complex128)
-    py = xp.zeros((1,1, fft_ny, 1), dtype=xp.complex128)
-    pz = xp.zeros((1,1, 1, fft_nz), dtype=xp.complex128)
+    px = xp.zeros((1, fft_nx, 1, 1), dtype=xp.complex128)
+    py = xp.zeros((1, 1, fft_ny, 1), dtype=xp.complex128)
+    pz = xp.zeros((1, 1, 1, fft_nz), dtype=xp.complex128)
 
     # initialize output V_q,mu,nu array
     V_qfullG = xp.zeros((int(wfn.ngkmax)), dtype=xp.complex128)
-    V_qmunu = xp.zeros((*wfn.kgrid, n_rmu, n_rmu), dtype=xp.complex128)
+    V_q_names = ['nfreq', 'nkx', 'nky', 'nkz', 'n_spinor1', 'n_rmu1', 'n_spinor2', 'n_rmu2']
+    V_qmunu = LabeledArray(shape=(None, *wfn.kgrid, None, n_rmu, None, n_rmu), axes=V_q_names)
 
     # fill psi_l/r_rtot_out with respective psi(*)_l/r(r) for all k
     print(f"Performing FFTs for wavefunction ranges {bandrange_l} and {bandrange_r}")
-    fft_bandrange(wfn, sym, bandrange_l, True, psi_l_rtot_out, xp=cp)
-    fft_bandrange(wfn, sym, bandrange_r, False, psi_r_rtot_out, xp=cp)
+    fft_bandrange(wfn, sym, bandrange_l, True, psi_l_rtot_out.data, xp=cp)
+    fft_bandrange(wfn, sym, bandrange_r, False, psi_r_rtot_out.data, xp=cp)
     print("FFTs complete")
-    
+
     ##########################################
     # Loop over all q-points
     # for each q, we get zeta_q via least squares, then immediately get W/v_q,mu,nu so we don't have to store all zeta_q
     ##########################################
-    qvec = xp.array([0,0,0], dtype=xp.int32)
-    for qvec_nonneg in xp.ndindex(*wfn.kgrid): 
+    qvec = xp.array([0, 0, 0], dtype=xp.int32)
+    for qvec_nonneg in xp.ndindex(*wfn.kgrid):
         # where qvec[i] > ceil(kgrid[i]/2), umklapp to negative (for k<->R FFTs later)
         # note: not necessary
         qvec = xp.asarray(qvec_nonneg)
-        if qvec_nonneg[0] > kgridgpu[0]//2: qvec[0] = qvec_nonneg[0] - kgridgpu[0]
-        if qvec_nonneg[1] > kgridgpu[1]//2: qvec[1] = qvec_nonneg[1] - kgridgpu[1]
-        if qvec_nonneg[2] > kgridgpu[2]//2: qvec[2] = qvec_nonneg[2] - kgridgpu[2]
+        if qvec_nonneg[0] > kgridgpu[0] // 2: qvec[0] = qvec_nonneg[0] - kgridgpu[0]
+        if qvec_nonneg[1] > kgridgpu[1] // 2: qvec[1] = qvec_nonneg[1] - kgridgpu[1]
+        if qvec_nonneg[2] > kgridgpu[2] // 2: qvec[2] = qvec_nonneg[2] - kgridgpu[2]
 
         ZCT.fill(0)
         CCT.fill(0)
 
         # note no symmetries used here but it would be possible to do so, though it's not a bottleneck.
         for k_r in range(sym.nk_tot):
-            k_l_full = xp.asarray(sym.kvecs_asints[k_r]) - qvec#.get()
+            k_l_full = xp.asarray(sym.kvecs_asints[k_r]) - qvec
             k_l_gt0 = xp.mod(k_l_full, kgridgpu)
             k_l = np.where(np.all(sym.kvecs_asints == k_l_gt0.get(), axis=1))[0][0]
 
+            psi_l_rtot = psi_l_rtot_out.slice('nk', k_l, tagged=False).reshape(nb_l * nspinor, *wfn.fft_grid)
+            psi_r_rtot = psi_r_rtot_out.slice('nk', k_r, tagged=False).reshape(nb_r * nspinor, *wfn.fft_grid)
 
-            psi_l_rtot = psi_l_rtot.reshape(nb_l*nspinor,*wfn.fft_grid)
-            psi_r_rtot = psi_r_rtot.reshape(nb_r*nspinor,*wfn.fft_grid)
-            
-            psi_l_rtot[:] = psi_l_rtot_out[k_l].reshape(nb_l*nspinor,*wfn.fft_grid)
-            psi_r_rtot[:] = psi_r_rtot_out[k_r].reshape(nb_r*nspinor,*wfn.fft_grid)
-
-            ##############################################
-
-            psi_l_rmu = psi_l_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_l*2, -1)
-            psi_r_rmu = psi_r_rtot[:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]#.reshape(nb_r*2, -1)
-            psi_l_rmuT = xp.ascontiguousarray(psi_l_rmu.T) # memory locality in matmuls. extra mem may be a negative
+            psi_l_rmu = psi_l_rtot[:, centroid_indices[:, 0], centroid_indices[:, 1], centroid_indices[:, 2]]
+            psi_r_rmu = psi_r_rtot[:, centroid_indices[:, 0], centroid_indices[:, 1], centroid_indices[:, 2]]
+            psi_l_rmuT = xp.ascontiguousarray(psi_l_rmu.T)  # memory locality in matmuls. extra mem may be a negative
             psi_r_rmuT = xp.ascontiguousarray(psi_r_rmu.T)
 
-            psi_l_rtot = psi_l_rtot.reshape(nb_l*nspinor, -1)
-            psi_r_rtot = psi_r_rtot.reshape(nb_r*nspinor, -1)
-            
+            psi_l_rtot = psi_l_rtot.reshape(nb_l * nspinor, -1)
+            psi_r_rtot = psi_r_rtot.reshape(nb_r * nspinor, -1)
+
             # Add contribution from this k,q pair to ZC^T and CC^T
-            # combine band and spinor indices, so that decomp is of form \sum_\mu \zeta^q_\mu(r) \psi^*_mk-q,a(r_\mu) \psi_nk,b(r_\mu)
-            # a.k.a. all four possible M_sigma,sigma' combinations are included
-            P_l = xp.matmul(psi_l_rmuT, psi_l_rtot)
-            P_r = xp.matmul(psi_r_rmuT, psi_r_rtot)
-            ZCT += xp.multiply(P_l, P_r)
-            
             Pmu_l = xp.matmul(psi_l_rmuT, psi_l_rmu)
             Pmu_r = xp.matmul(psi_r_rmuT, psi_r_rmu)
             CCT += xp.multiply(Pmu_l, Pmu_r)
-        
+
+            P_l = xp.matmul(psi_l_rmuT, psi_l_rtot)
+            P_r = xp.matmul(psi_r_rmuT, psi_r_rtot)
+            ZCT += xp.multiply(P_l, P_r)
 
         # Solve for zeta_q
-        # C_C_T shape (nrmu, nrmu), Z_C_T shape (nrmu, nrtot)
-        # zeta_q shape (nrmu, nrtot) 
         zeta_q = xp.linalg.lstsq(CCT, ZCT, rcond=-1)[0]
-        
-        # fourier transform zeta_q to G space
+
+        # Fourier transform zeta_q to G space
         zeta_q = zeta_q.reshape(n_rmu, *wfn.fft_grid)
-        # remove phase factor from zeta_q(r) = e^{iqr} z_q(r)
-        # qvec chosen to be potentially negative but it really shouldnt matter if consistent with vqG
+        # Remove phase factor from zeta_q(r) = e^{iqr} z_q(r)
         xp.exp(-2j * xp.pi * qvec[0] / kgridgpu[0] * fx, out=px)
         xp.exp(-2j * xp.pi * qvec[1] / kgridgpu[1] * fy, out=py)
         xp.exp(-2j * xp.pi * qvec[2] / kgridgpu[2] * fz, out=pz)
@@ -325,56 +323,39 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
         zeta_q *= pz
 
         for mu in xp.ndindex(zeta_q.shape[0]):
-            zeta_q[mu] = fftx.fft.fftn(zeta_q[mu])
-            # this should maybe be an ifftn.
-        zeta_q *= n_rtot #xp.sqrt(1./xp.float64(n_rtot))  # normalize FFT
+            zeta_q[mu] = xp.fft.fftn(zeta_q[mu])
+        zeta_q *= n_rtot
 
         #####################################
         # now, get this V_qG from the stored V_qbarG array by remapping G components.
         #####################################
-        # get qbar_idx, Sq and G_Sq such that q_ext = Sq @ q_ext + G_Sq.
         qveccrys = xp.divide(xp.asarray(qvec, dtype=xp.float64), kgridgpu)
         q_rounded = xp.round(qveccrys)
         q_ext = xp.where(xp.abs(qveccrys - q_rounded) < 1e-8, q_rounded, qveccrys)
-        # iq is the qvec index in sym.unfolded_kpts, but iqbar/iqbareps will be the irrBZ indices used to get vcoul/epsinv. 
-        iq = find_qpoint_index(q_ext, sym, tol=1e-6) 
+        iq = find_qpoint_index(q_ext, sym, tol=1e-6)
         iq_cpu = iq.get()
 
-        ######################################################
-        # IF W_q/V_q SYMMETRY REDUCED:
-        ######################################################
-        # get qbar_idx, Sq and G_Sq such that q_ext = Sq @ q_ext + G_Sq.
         iqbar = sym.irk_to_k_map[iq_cpu]
-        Sq = sym.sym_mats_k[sym.irk_sym_map[iq_cpu]] # now, qbar @ Sq = q
-        #G_Sq = np.round(sym.unfolded_kpts[iq_cpu] - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
-        G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32) # if we needed q outside zone, but it seems fine
-        vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki',Sq.astype(np.int32),wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis,:],dtype=xp.int32)
-        V_qfullG.fill(0.0+0.0j)
-        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[iqbar,:vcoul_psiG_comps.shape[0]]
+        Sq = sym.sym_mats_k[sym.irk_sym_map[iq_cpu]]
+        G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
+        vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki', Sq.astype(np.int32), wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis, :], dtype=xp.int32)
+        V_qfullG.fill(0.0 + 0.0j)
+        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[iqbar, :vcoul_psiG_comps.shape[0]]
 
-
-        # get correct G components
-        #ng_q = int(wfn.ngk[sym.irk_to_k_map[iq]])
-        zeta_qG_mu.fill(0.0+0.0j)
-        #G_q_comps_cpu = sym.get_gvecs_kfull(wfn,iq)  # Convert to integers. DO -1 ?? TODO
-        #G_q_comps = xp.asarray(G_q_comps_cpu).astype(xp.int32)  # Convert to integers. DO -1 ?? TODO
+        zeta_qG_mu.fill(0.0 + 0.0j)
         for mu in range(zeta_q.shape[0]):
-            zeta_qG_mu[mu,:vcoul_psiG_comps.shape[0]] = zeta_q[mu,vcoul_psiG_comps[:,0],vcoul_psiG_comps[:,1],vcoul_psiG_comps[:,2]]
+            zeta_qG_mu[mu, :vcoul_psiG_comps.shape[0]] = zeta_q[mu, vcoul_psiG_comps[:, 0], vcoul_psiG_comps[:, 1], vcoul_psiG_comps[:, 2]]
 
-        ###############################
-
-        # Store zeta_qG_mu in transposed form initially (ngk, n_rmu)
-        # TODO: ascontiguousarray here?
-        temp = xp.multiply(V_qfullG[:,None], zeta_qG_mu.T)  # (ngk, n_rmu)
-        V_qmunu[*qvec_nonneg] = xp.matmul(xp.conj(zeta_qG_mu), temp)  # (n_rmu, n_rmu)
+        temp = xp.multiply(V_qfullG[:, None], zeta_qG_mu.T)
+        V_qmunu.data[0,*qvec_nonneg,0,:,0,:] = xp.matmul(xp.conj(zeta_qG_mu), temp)
 
         print(f"qpoint {iq} done")
 
-    # shape of these is (nkpts, nbands, nspinor, nrmu)
-    psi_l_rmu_out = psi_l_rtot_out[:,:,:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]
-    psi_r_rmu_out = psi_r_rtot_out[:,:,:,centroid_indices[:,0],centroid_indices[:,1],centroid_indices[:,2]]
+    psi_l_rmu_out = psi_l_rtot_out.slice_many({'rx': centroid_indices[:, 0], 'ry': centroid_indices[:, 1], 'rz': centroid_indices[:, 2]},tagged=True)
+    psi_r_rmu_out = psi_r_rtot_out.slice_many({'rx': centroid_indices[:, 0], 'ry': centroid_indices[:, 1], 'rz': centroid_indices[:, 2]},tagged=True)
 
-    return V_qmunu, xp.conj(psi_l_rmu_out), psi_r_rmu_out
+    xp.conj(psi_l_rmu_out.data, out=psi_l_rmu_out.data)
+    return V_qmunu, psi_l_rmu_out, psi_r_rmu_out
 
 
 # G_(kab)(mu,nu,t=0) = \sum_mn psi^*_mk(r_mu) * psi_nk(r_nu) (n restricted to range of psi_rmu)
@@ -515,39 +496,26 @@ def write_sigma_to_file(sigma_kij, filename="eqp0.dat"):
                 imag = float(sigma_kij[k,n,n].imag)
                 f.write(f"n={n:<3} {real:>15.6f} + {imag:>15.6f}i\n")
 
-def write_arrays_to_h5(V_qmunu, Gkval_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, sigma_x_kbar_ij, filename="debug_arrays.h5"):
-    """Write arrays to HDF5 file for debugging."""
-    import h5py
-    
-    # Convert CuPy arrays to NumPy if needed
-    if cp.cuda.is_available():
-        V_qmunu = cp.asnumpy(V_qmunu)
-        Gkval_mu_nu = cp.asnumpy(Gkval_mu_nu)
-        psi_l_rmu_out = cp.asnumpy(psi_l_rmu_out)
-        psi_r_rmu_out = cp.asnumpy(psi_r_rmu_out)
-        sigma_x_kbar_munu = cp.asnumpy(sigma_x_kbar_munu)
-        sigma_x_kbar_ij = cp.asnumpy(sigma_x_kbar_ij)
-    
+def write_labeled_arrays_to_h5(filename, V_qmunu, psi_l_rmu_out, psi_r_rmu_out):
+    """
+    Write the data of LabeledArray objects to an HDF5 file.
+
+    Args:
+        filename (str): The name of the HDF5 file to write to.
+        V_qmunu (LabeledArray): The V_qmunu LabeledArray.
+        psi_l_rmu_out (LabeledArray): The psi_l_rmu_out LabeledArray.
+        psi_r_rmu_out (LabeledArray): The psi_r_rmu_out LabeledArray.
+    """
     with h5py.File(filename, 'w') as f:
-        # Create groups for organization
-        coulomb = f.create_group('coulomb')
-        green = f.create_group('green')
-        wavefunc = f.create_group('wavefunc')
-        sigma = f.create_group('sigma')
-        
-        # Write arrays with compression
-        coulomb.create_dataset('V_qmunu', data=V_qmunu, compression='gzip')
-        green.create_dataset('Gkval_mu_nu', data=Gkval_mu_nu, compression='gzip')
-        wavefunc.create_dataset('psi_l_rmu_out', data=psi_l_rmu_out, compression='gzip')
-        wavefunc.create_dataset('psi_r_rmu_out', data=psi_r_rmu_out, compression='gzip')
-        sigma.create_dataset('sigma_x_kbar_munu', data=sigma_x_kbar_munu, compression='gzip')
-        sigma.create_dataset('sigma_x_kbar_ij', data=sigma_x_kbar_ij, compression='gzip')
-        
-        # Add some metadata
-        f.attrs['creation_date'] = str(np.datetime64('now'))
-        f.attrs['nk_tot'] = sym.nk_tot
-        f.attrs['nk_red'] = sym.nk_red
-        f.attrs['n_rmu'] = psi_l_rmu_out.shape[3]  # Number of centroids
+        # Convert CuPy arrays to NumPy if needed and get the raw data
+        V_qmunu_data = V_qmunu.get() if isinstance(V_qmunu, cp.ndarray) else V_qmunu
+        psi_l_rmu_out_data = psi_l_rmu_out.get() if isinstance(psi_l_rmu_out, cp.ndarray) else psi_l_rmu_out
+        psi_r_rmu_out_data = psi_r_rmu_out.get() if isinstance(psi_r_rmu_out, cp.ndarray) else psi_r_rmu_out
+
+        # Write data arrays
+        f.create_dataset('V_qmunu_data', data=V_qmunu_data)
+        f.create_dataset('psi_l_rmu_out_data', data=psi_l_rmu_out_data)
+        f.create_dataset('psi_r_rmu_out_data', data=psi_r_rmu_out_data)
 
 def find_qpoint_index(q_ext, sym, tol=1e-6):
     """Find index of q-point in unfolded k-points list.
@@ -573,6 +541,46 @@ def find_qpoint_index(q_ext, sym, tol=1e-6):
         raise ValueError(f"No matching q-point found within tolerance {tol}")
     
     return xp.argmin(total_diffs)
+
+def read_labeled_arrays_from_h5(filename):
+    """
+    Read the data arrays from an HDF5 file and reconstruct LabeledArrays.
+
+    Args:
+        filename (str): The name of the HDF5 file to read from.
+
+    Returns:
+        tuple: A tuple containing the LabeledArrays (V_qmunu, psi_l_rmu_out, psi_r_rmu_out).
+    """
+    with h5py.File(filename, 'r') as f:
+        # Read data arrays
+        V_qmunu_data = f['V_qmunu_data'][:]
+        psi_l_rmu_out_data = f['psi_l_rmu_out_data'][:]
+        psi_r_rmu_out_data = f['psi_r_rmu_out_data'][:]
+
+        # Convert to CuPy arrays if CuPy is available
+        if cp.is_available():
+            V_qmunu_data = cp.asarray(V_qmunu_data)
+            psi_l_rmu_out_data = cp.asarray(psi_l_rmu_out_data)
+            psi_r_rmu_out_data = cp.asarray(psi_r_rmu_out_data)
+
+        # Create LabeledArrays with appropriate axes
+        V_qmunu = LabeledArray(
+            data=V_qmunu_data,
+            axes=['nfreq', 'nkx', 'nky', 'nkz', 'n_spinor1', 'n_rmu1', 'n_spinor2', 'n_rmu2']
+        )
+        
+        psi_l_rmu_out = LabeledArray(
+            data=psi_l_rmu_out_data,
+            axes=['nk', 'nb', 'nspinor', 'rmu']
+        )
+        
+        psi_r_rmu_out = LabeledArray(
+            data=psi_r_rmu_out_data,
+            axes=['nk', 'nb', 'nspinor', 'rmu']
+        )
+
+        return V_qmunu, psi_l_rmu_out, psi_r_rmu_out
 
 
 
@@ -624,7 +632,7 @@ if __name__ == "__main__":
     ####################################
     # 1.) get (truncated in 2D) coulomb potential v_q(G) and W_q=0(G=G'=0) element
     ####################################
-    V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
+    #V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
 
 
     ####################################
@@ -632,10 +640,16 @@ if __name__ == "__main__":
     # 3.) only store V_q,mu,nu in memory so no need to store all zeta_q,mu(r)
     ####################################
     #V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
+    #write_labeled_arrays_to_h5("taggedarrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
+    #exit()
+    V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
+    psi_l_rmu_out = psi_l_rmu_out.data
+    psi_r_rmu_out = psi_r_rmu_out.data
+    V_qmunu = V_qmunu.data
     # here we will use the windows to instead fit every band at once; easier for chi.
-    V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
-    psi_l_rmu_out = psi_l_rmu_out.slice('nbnd',xp.s_[0:n_valrange[1]])
-    psi_r_rmu_out = psi_r_rmu_out.slice('nbnd',xp.s_[:n_valrange[1]])
+    #V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
+    #psi_l_rmu_out = psi_l_rmu_out.slice('nbnd',xp.s_[0:n_valrange[1]])
+    #psi_r_rmu_out = psi_r_rmu_out.slice('nbnd',xp.s_[:n_valrange[1]])
     #################################### 
     # 4.) get G_k(r_mu,r_nu) for valence bands
     ####################################
@@ -651,4 +665,4 @@ if __name__ == "__main__":
 
     write_sigma_to_file(ryd2ev*sigma_x_kbar_ij, "eqp0_noqsym.dat")
     # Call this function after your calculations
-    write_arrays_to_h5(V_qmunu, G_R_val_mu_nu, psi_l_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, sigma_x_kbar_ij)
+    write_labeled_arrays_to_h5("debug_arrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
