@@ -187,3 +187,32 @@ class LabeledArray:
 
     def __repr__(self):
         return f"LabeledArray(shape={self.data.shape}, axes={self.axes}, joined_axes={self.joined_axes})"
+
+
+class WfnArray:
+    """
+    Class to hold both wavefunction coefficients and energies together.
+    Uses slots for memory efficiency and to prevent accidental attribute creation.
+    """
+    __slots__ = ('psi', 'enk')
+    
+    def __init__(self, psi: LabeledArray, enk: LabeledArray):
+        """
+        Initialize WfnArray from existing LabeledArrays.
+        
+        Args:
+            psi: LabeledArray containing wavefunction coefficients
+                Expected axes: ['nk', 'nb', 'nspinor', 'nrmu']
+            enk: LabeledArray containing energies
+                Expected axes: ['nb', 'nk']
+        """
+        # Verify input types
+        if not isinstance(psi, LabeledArray) or not isinstance(enk, LabeledArray):
+            raise TypeError("Both psi and enk must be LabeledArray instances")
+            
+        # Verify matching dimensions
+        if psi.shape('nk') != enk.shape('nk') or psi.shape('nb') != enk.shape('nb'):
+            raise ValueError("Incompatible shapes between psi and enk arrays")
+            
+        self.psi = psi
+        self.enk = enk

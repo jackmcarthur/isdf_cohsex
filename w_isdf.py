@@ -5,11 +5,28 @@ from epsreader import EPSReader
 import fftx
 import symmetry_maps
 import cupyx.scipy.fftpack
+from tagged_arrays import LabeledArray
 #import matplotlib.pyplot as plt
 if cp.cuda.is_available():
     xp = cp
 else:
     xp = np
+
+
+def get_G_lm(psi_l, psi_r, window_pair, wfn, sym, xp):
+    ntau = window_pair.ntau
+    nspinor = psi_l.shape('nspinor')
+    nrmu = psi_l.shape('nrmu')
+
+    G_lm = LabeledArray(shape=(ntau, *wfn.kgrid, nspinor,nrmu,nspinor,nrmu), axes=('ntau', 'nkx', 'nky', 'nkz', 'nspinor', 'nrmu', 'nspinor', 'nrmu'))
+    for tau in range(ntau):
+        #sin_tau = xp.sin()
+        G_lm.data[tau] = 
+    return G_lm
+
+def get_G_lm_tau(psi_l, psi_r, window_pair, tau, wfn, xp):
+    nk = np.prod(wfn.kgrid)
+    
 
 
 def get_static_chi_q(wfn, sym, G_R, xp):

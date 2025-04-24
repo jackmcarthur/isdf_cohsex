@@ -5,7 +5,7 @@ from epsreader import EPSReader
 import fftx
 import symmetry_maps
 import cupyx.scipy.fftpack
-from tagged_arrays import LabeledArray
+from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
 import h5py
 #import matplotlib.pyplot as plt
@@ -206,6 +206,17 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         else:
             psi_rtot_out[k_idx] = psi_rtot
 
+def get_enk_bandrange(wfn, sym, bandrange, xp):
+    nb = bandrange[1] - bandrange[0]
+    en_irk = xp.asarray(wfn.energies[0,:,bandrange[0]:bandrange[1]])
+    enk = LabeledArray(shape=(sym.nk_tot,nb), axes=['nk', 'nb'])
+    
+    # needed because WFN.h5 stores sym-reduced enk's. though real, enk's will be complex128's
+    # we also use nk as the first index because other arrays use nb as the faster index.
+    enk.data = en_irk[sym.irk_to_k_map,:]
+
+    return enk
+
 def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
@@ -223,8 +234,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     psi_r_rtot_out = LabeledArray(shape=(sym.nk_tot, nb_r, nspinor, *wfn.fft_grid), axes=psi_rtot_names)
     psi_l_rmu_out = LabeledArray(shape=(sym.nk_tot, nb_l, nspinor, n_rmu), axes=psi_rmu_names)
     psi_r_rmu_out = LabeledArray(shape=(sym.nk_tot, nb_r, nspinor, n_rmu), axes=psi_rmu_names)
-    #psi_l_rmu_out.join('nspinor', 'nrmu')
-    #psi_r_rmu_out.join('nspinor', 'nrmu')
+
 
     # Initialize temporary arrays for processing (1 kpt, bands in bandrange) at a time
     psi_l_rtot = xp.zeros((nb_l * nspinor, *wfn.fft_grid), dtype=xp.complex128)
@@ -234,11 +244,9 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     psi_l_rmuT = xp.zeros((n_rmu, nb_l * nspinor), dtype=xp.complex128)
     psi_r_rmuT = xp.zeros((n_rmu, nb_r * nspinor), dtype=xp.complex128)
 
-    # Initialize P_l, P_r
     P_l = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
     P_r = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
 
-    # Initialize ZC^T and CC^T
     ZCT = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
     CCT = xp.zeros((n_rmu, n_rmu), dtype=xp.complex128)
 
@@ -356,15 +364,20 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     psi_r_rmu_out.data = psi_r_rtot_out.slice_many({'rx': centroid_indices[:, 0], 'ry': centroid_indices[:, 1], 'rz': centroid_indices[:, 2]})
 
     xp.conj(psi_l_rmu_out.data, out=psi_l_rmu_out.data)
-    #psi_l_rmu_out.unjoin('nspinor','nrmu')
-    #psi_r_rmu_out.unjoin('nspinor','nrmu')
-    
-    return V_qmunu, psi_l_rmu_out, psi_r_rmu_out
+
+    # make WfnArray's that contain psi_nk(r_mu),E_nk together.
+    enk_l = get_enk_bandrange(wfn, sym, bandrange_l, xp)
+    enk_r = get_enk_bandrange(wfn, sym, bandrange_r, xp)
+
+    wfn_l = WfnArray(psi_l_rmu_out, enk_l)
+    wfn_r = WfnArray(psi_r_rmu_out, enk_r)
+
+    return V_qmunu, wfn_l, wfn_r
 
 
 # G_(kab)(mu,nu,t=0) = \sum_mn psi^*_mk(r_mu) * psi_nk(r_nu) (n restricted to range of psi_rmu)
 # k goes over kfull
-def get_G_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None, return_R=False):
+def get_G_mu_nu(wfn, psi_l, psi_r, n_rmu, xp, Gkij=None, return_R=False):
     # using xp to wrap cupy/numpy, calculate:
     # take the matrix psi with shape (nkpts, nbands, nspinor, nrmu) and do:
     # G_{k,a,b}(mu,nu) = \sum_mnab psi^*_mka(r_mu) * psi_nkb(r_nu) (matmul)
@@ -373,7 +386,7 @@ def get_G_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None, return_R=False)
     if Gkij is None:
         # Initialize Gkij with all variables
         Gkij = LabeledArray(
-            shape=(1, *wfn.kgrid, psi_l_rmu.shape('nb'), psi_r_rmu.shape('nb')),
+            shape=(1, *wfn.kgrid, psi_l.psi.shape('nb'), psi_r.psi.shape('nb')),
             axes=['nfreq', 'nkx', 'nky', 'nkz', 'nb1', 'nb2']
         )
         Gkij.join('nkx', 'nky', 'nkz')
@@ -382,8 +395,8 @@ def get_G_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None, return_R=False)
         
 
     # nspinor*nrmu
-    n_spinor = psi_l_rmu.shape('nspinor') 
-    nrmu = psi_l_rmu.shape('nrmu')
+    n_spinor = psi_l.psi.shape('nspinor') 
+    nrmu = psi_l.psi.shape('nrmu')
     # dims: nfreq(=0), nk, n_rmu, n_rmu
     Gk_mu_nu_0 = LabeledArray(
         shape=(1, *wfn.kgrid, n_spinor, nrmu, n_spinor, nrmu),
@@ -393,21 +406,19 @@ def get_G_mu_nu(wfn, psi_l_rmu, psi_r_rmu, n_rmu, xp, Gkij=None, return_R=False)
     Gk_mu_nu_0.join('nspinor1', 'nrmu1')
     Gk_mu_nu_0.join('nspinor2', 'nrmu2')
 
-    psi_l_rmu.join('nspinor','nrmu')
-    if psi_l_rmu is not psi_r_rmu:
-        psi_r_rmu.join('nspinor','nrmu')
+    psi_l_tmp = xp.zeros((psi_l.psi.shape('nspinor')*psi_l.psi.shape('nrmu'),psi_l.psi.shape('nb')), dtype=xp.complex128)
+    psi_r_tmp = xp.zeros((psi_r.psi.shape('nb'),psi_r.psi.shape('nspinor')*psi_r.psi.shape('nrmu')), dtype=xp.complex128)
+    psi_l.psi.join('nspinor','nrmu')
+    if psi_l is not psi_r:
+        psi_r.psi.join('nspinor','nrmu')
 
     for kpt in xp.ndindex(*wfn.kgrid):
         k_idx = kpt[0] * wfn.kgrid[1] * wfn.kgrid[2] + kpt[1] * wfn.kgrid[2] + kpt[2]
         
-        #psi_l = psi_l_rmu[k_idx,:,:,:].reshape(-1,n_spinmu).T
-        #psi_r = xp.conj(psi_r_rmu[k_idx,:,:,:]).reshape(-1,n_spinmu)
-        psi_l = psi_l_rmu.slice('nk', k_idx).T
-        psi_r = xp.conj(psi_r_rmu.slice('nk', k_idx))
-        Gk_mu_nu_0.data[0,*kpt] = xp.matmul(xp.matmul(psi_l, Gkij.slice_many({'nfreq':0,'nkx*nky*nkz':k_idx})), psi_r)
+        psi_l_tmp = psi_l.psi.slice('nk', k_idx).T
+        psi_r_tmp = xp.conj(psi_r.psi.slice('nk', k_idx))
+        Gk_mu_nu_0.data[0,*kpt] = xp.matmul(xp.matmul(psi_l_tmp, Gkij.slice_many({'nfreq':0,'nkx*nky*nkz':k_idx})), psi_r_tmp)
 
-    #Gk_mu_nu_0 = Gk_mu_nu_0.reshape(1,*wfn.kgrid,wfn.nspinor,n_rmu,wfn.nspinor,n_rmu)
-    #Gk_mu_nu_0.unjoin('nkx', 'nky', 'nkz')
     Gk_mu_nu_0.unjoin('nspinor1', 'nrmu1')
     Gk_mu_nu_0.unjoin('nspinor2', 'nrmu2')
 
@@ -459,31 +470,31 @@ def get_sigma_x_mu_nu(wfn, sym, G_R, V_q, xp):
     return sigma_R
 
 
-def get_sigma_x_kij(psi_l_rmu, psi_r_rmu, sigma_kbar, xp):
+def get_sigma_x_kij(psi_l, psi_r, sigma_kbar, xp):
     r"""
     Calculate the sigma_x_kij matrix elements.
-
     sigma_mnkbar = \sum_rmu,rnu,s,s' exp(ik(r_nu-r_mu)) u_mk^*(r_mu,s) sigma_kbar,ss'(r_mu,r_nu) u_nk(r_nu,s')
     """
-    sigma_kij = xp.zeros((sigma_kbar.shape('nkx*nky*nkz'), psi_l_rmu.shape('nb'), psi_r_rmu.shape('nb')), 
+    sigma_kij = xp.zeros((sigma_kbar.shape('nkx*nky*nkz'), psi_l.psi.shape('nb'), psi_r.psi.shape('nb')), 
                          dtype=xp.complex128)  # TODO: should be a labelled array
+    sigma_ktmp = xp.zeros((sigma_kbar.shape('nspinor1')*sigma_kbar.shape('nrmu1'), sigma_kbar.shape('nspinor2')*sigma_kbar.shape('nrmu2')), dtype=xp.complex128)
+    psi_l_tmp = xp.zeros((psi_l.psi.shape('nb'), psi_l.psi.shape('nspinor')*psi_l.psi.shape('nrmu')), dtype=xp.complex128)
+    psi_r_tmp = xp.zeros((psi_r.psi.shape('nspinor')*psi_r.psi.shape('nrmu'),psi_r.psi.shape('nb')), dtype=xp.complex128)
 
     sigma_kbar.join('nspinor1', 'nrmu1')
     sigma_kbar.join('nspinor2', 'nrmu2')
 
-    psi_l_rmu.join('nspinor', 'nrmu')
-    if psi_l_rmu is not psi_r_rmu:
-        psi_r_rmu.join('nspinor', 'nrmu')
+    psi_l.psi.join('nspinor', 'nrmu')
+    if psi_l is not psi_r:
+        psi_r.psi.join('nspinor', 'nrmu')
 
     for kpt in xp.ndindex(*wfn.kgrid):
         k_idx = kpt[0] * wfn.kgrid[1] * wfn.kgrid[2] + kpt[1] * wfn.kgrid[2] + kpt[2]
 
         sigma_ktmp = sigma_kbar.slice_many({'nfreq': 0, 'nkx*nky*nkz': k_idx})
-        # TODO: should probably rearrange psi_l to be contiguous in memory
-        psi_l = xp.conj(psi_l_rmu.slice('nk', k_idx))
-        psi_r = psi_r_rmu.slice('nk', k_idx).T
-
-        sigma_kij[k_idx, :, :] = xp.matmul(xp.matmul(psi_l, sigma_ktmp), psi_r)
+        psi_l_tmp = xp.conj(psi_l.psi.slice('nk', k_idx))
+        psi_r_tmp = psi_r.psi.slice('nk', k_idx).T
+        sigma_kij[k_idx, :, :] = xp.matmul(xp.matmul(psi_l_tmp, sigma_ktmp), psi_r_tmp)
 
     return sigma_kij
 
@@ -526,60 +537,92 @@ def find_qpoint_index(q_ext, sym, tol=1e-6):
     
     return xp.argmin(total_diffs)
 
-def write_labeled_arrays_to_h5(filename, V_qmunu, psi_l_rmu_out, psi_r_rmu_out):
+def write_labeled_arrays_to_h5(filename, V_qmunu, psi_l, psi_r):
     """
-    Write the data of LabeledArray objects to an HDF5 file.
+    Write the data of LabeledArray and WfnArray objects to an HDF5 file.
+    
+    Args:
+        filename: Name of the HDF5 file
+        V_qmunu: LabeledArray for V_qmunu
+        psi_l: WfnArray for left states
+        psi_r: WfnArray for right states
     """
     with h5py.File(filename, 'w') as f:
         # Access the underlying numerical data arrays
         V_qmunu_data = V_qmunu.data.get() if isinstance(V_qmunu.data, cp.ndarray) else V_qmunu.data
-        psi_l_rmu_out_data = psi_l_rmu_out.data.get() if isinstance(psi_l_rmu_out.data, cp.ndarray) else psi_l_rmu_out.data
-        psi_r_rmu_out_data = psi_r_rmu_out.data.get() if isinstance(psi_r_rmu_out.data, cp.ndarray) else psi_r_rmu_out.data
+        
+        # Handle WfnArray psi and enk data
+        psi_l_data = psi_l.psi.data.get() if isinstance(psi_l.psi.data, cp.ndarray) else psi_l.psi.data
+        psi_r_data = psi_r.psi.data.get() if isinstance(psi_r.psi.data, cp.ndarray) else psi_r.psi.data
+        enk_l_data = psi_l.enk.data.get() if isinstance(psi_l.enk.data, cp.ndarray) else psi_l.enk.data
+        enk_r_data = psi_r.enk.data.get() if isinstance(psi_r.enk.data, cp.ndarray) else psi_r.enk.data
 
         # Write data arrays
         f.create_dataset('V_qmunu_data', data=V_qmunu_data)
-        f.create_dataset('psi_l_rmu_out_data', data=psi_l_rmu_out_data)
-        f.create_dataset('psi_r_rmu_out_data', data=psi_r_rmu_out_data)
+        f.create_dataset('psi_l_data', data=psi_l_data)
+        f.create_dataset('psi_r_data', data=psi_r_data)
+        f.create_dataset('enk_l_data', data=enk_l_data)
+        f.create_dataset('enk_r_data', data=enk_r_data)
 
 def read_labeled_arrays_from_h5(filename):
     """
-    Read the data arrays from an HDF5 file and reconstruct LabeledArrays.
+    Read the data arrays from an HDF5 file and reconstruct LabeledArrays and WfnArrays.
 
     Args:
         filename (str): The name of the HDF5 file to read from.
 
     Returns:
-        tuple: A tuple containing the LabeledArrays (V_qmunu, psi_l_rmu_out, psi_r_rmu_out).
+        tuple: A tuple containing (V_qmunu, psi_l, psi_r) where V_qmunu is a LabeledArray
+              and psi_l/psi_r are WfnArrays.
     """
     with h5py.File(filename, 'r') as f:
         # Read data arrays
         V_qmunu_data = f['V_qmunu_data'][:]
-        psi_l_rmu_out_data = f['psi_l_rmu_out_data'][:]
-        psi_r_rmu_out_data = f['psi_r_rmu_out_data'][:]
+        psi_l_data = f['psi_l_data'][:]
+        psi_r_data = f['psi_r_data'][:]
+        enk_l_data = f['enk_l_data'][:]
+        enk_r_data = f['enk_r_data'][:]
 
         # Convert to CuPy arrays if CuPy is available
         if cp.is_available():
             V_qmunu_data = cp.asarray(V_qmunu_data)
-            psi_l_rmu_out_data = cp.asarray(psi_l_rmu_out_data)
-            psi_r_rmu_out_data = cp.asarray(psi_r_rmu_out_data)
+            psi_l_data = cp.asarray(psi_l_data)
+            psi_r_data = cp.asarray(psi_r_data)
+            enk_l_data = cp.asarray(enk_l_data)
+            enk_r_data = cp.asarray(enk_r_data)
 
-        # Create LabeledArrays with appropriate axes
+        # Create LabeledArray for V_qmunu
         V_qmunu = LabeledArray(
             data=V_qmunu_data,
             axes=['nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2']
         )
         
-        psi_l_rmu_out = LabeledArray(
-            data=psi_l_rmu_out_data,
+        # Create LabeledArrays for psi and enk
+        psi_l = LabeledArray(
+            data=psi_l_data,
             axes=['nk', 'nb', 'nspinor', 'nrmu']
         )
         
-        psi_r_rmu_out = LabeledArray(
-            data=psi_r_rmu_out_data,
+        psi_r = LabeledArray(
+            data=psi_r_data,
             axes=['nk', 'nb', 'nspinor', 'nrmu']
         )
+        
+        enk_l = LabeledArray(
+            data=enk_l_data,
+            axes=['nk', 'nb']
+        )
+        
+        enk_r = LabeledArray(
+            data=enk_r_data,
+            axes=['nk', 'nb']
+        )
 
-        return V_qmunu, psi_l_rmu_out, psi_r_rmu_out
+        # Create WfnArrays
+        psi_l_wfn = WfnArray(psi_l, enk_l)
+        psi_r_wfn = WfnArray(psi_r, enk_r)
+
+        return V_qmunu, psi_l_wfn, psi_r_wfn
 
 
 
@@ -670,14 +713,13 @@ if __name__ == "__main__":
     elif restart and not x_only:
         V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
 
-    psi_l_rmu_out = psi_l_rmu_out.slice('nb',xp.s_[:wfn.nelec],tagged=True)
-    psi_r_rmu_out = psi_r_rmu_out.slice('nb',xp.s_[:nval+ncond],tagged=True)
+    psi_l_rmu_out.psi = psi_l_rmu_out.psi.slice('nb',xp.s_[:wfn.nelec],tagged=True)
+    psi_r_rmu_out.psi = psi_r_rmu_out.psi.slice('nb',xp.s_[:nval+ncond],tagged=True)
 
     #################################### 
     # 4.) get G_k(r_mu,r_nu) for valence bands
     ####################################
     G_R_val_mu_nu = get_G_mu_nu(wfn, psi_l_rmu_out, psi_l_rmu_out, n_rmu, xp, return_R=True)
-
 
     ####################################
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
