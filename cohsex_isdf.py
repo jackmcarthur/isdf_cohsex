@@ -7,6 +7,7 @@ import symmetry_maps
 import cupyx.scipy.fftpack
 from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
+from w_isdf import get_chi0
 import h5py
 #import matplotlib.pyplot as plt
 if cp.cuda.is_available():
@@ -713,6 +714,10 @@ if __name__ == "__main__":
     elif restart and not x_only:
         V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
 
+    chi0 = get_chi0(psi_l_rmu_out, psi_r_rmu_out, window_pairs, wfn, xp)
+    print("chi0 elements:")
+    print(chi0.data[0,0,0,:2,:2])
+
     psi_l_rmu_out.psi = psi_l_rmu_out.psi.slice('nb',xp.s_[:wfn.nelec],tagged=True)
     psi_r_rmu_out.psi = psi_r_rmu_out.psi.slice('nb',xp.s_[:nval+ncond],tagged=True)
 
@@ -729,5 +734,3 @@ if __name__ == "__main__":
 
 
     write_sigma_to_file(ryd2ev*sigma_x_kbar_ij, "eqp0_noqsym.dat")
-    # Call this function after your calculations
-    #write_labeled_arrays_to_h5("debug_arrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)

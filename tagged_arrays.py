@@ -77,7 +77,13 @@ class LabeledArray:
             raise ValueError("new_order must be a permutation of current axes.")
         perm = [self.axes.index(ax) for ax in new_order]
         new_data = self.xp.ascontiguousarray(self.data.transpose(perm))
-        return LabeledArray(new_data, list(new_order), joined_axes=dict(self.joined_axes))
+        # build the new object, carrying over the old joined_axes
+        new = LabeledArray(new_data,
+                           axes=list(new_order),
+                           joined_axes=dict(self.joined_axes))
+        # preserve the original sizes so unjoin() still works
+        new.original_sizes = dict(self.original_sizes)
+        return new
 
     def slice(self, axis_name: str, slice_val: Union[int, slice], tagged=False):
         idx = self.axes.index(axis_name)

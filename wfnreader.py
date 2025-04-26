@@ -30,6 +30,8 @@ class WFNReader:
         self.occs = self._file['mf_header/kpoints/occ'][:]
 
         self.nelec = int(np.sum(self.occs[0,0]))
+        # in-gap chemical potential
+        #self.efermi = 0.5 * (np.amin(self.energies[0,:,self.nelec]) - np.amax(self.energies[0,:,self.nelec-1]))
         
         # Gspace group
         self.ng = self._file['mf_header/gspace/ng'][()]
