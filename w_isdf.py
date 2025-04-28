@@ -63,7 +63,7 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 
     Gv_lm.unjoin('nkx', 'nky', 'nkz')
     Gv_lm = Gv_lm.kgrid_to_last()
-    Gv_lm.ifft_kgrid()
+    Gv_lm.ifft_kgrid() # G_k -> G_R
 
     Gc_lm.unjoin('nkx', 'nky', 'nkz')
     Gc_lm = Gc_lm.kgrid_to_last()
@@ -87,9 +87,9 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
         for b in range(psi_v.psi.shape('nspinor')):
             chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
 
-    chi_lm_Yt.fft_kgrid()
+    # note it would be more efficient to only fft chi0 in get_chi0
+    chi_lm_Yt.fft_kgrid() # chi_R -> chi_k
     chi_lm_Yt = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
-    # todo: this transpose isn't working. ntau possibly mixed up with nkx,nky,nkz
     return chi_lm_Yt
 
 
@@ -109,46 +109,91 @@ def get_chi0(psi_v, psi_c, windows, wfn, xp):
 
         chi0.data[0] += xp.einsum('t,ti...->i...', quad_weights, chi_lm.data)
 
+    chi0 = chi0.transpose('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
     return chi0
 
-# def get_static_chi_q(wfn, sym, G_R, xp):
-#     # chi(r,r',t=0) = G_R(r,r',t=0)G_-R(r',r,t=0)
-#     n_rmu = G_R.shape[2]
-#     n_spinor = G_R.shape[1]
-#     kgrid = tuple(G_R.shape[5:])
-#     nk = np.prod(kgrid)
+def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
+    # w_q(omega) = (1-v_q @ chi_q)^{-1} @ v_q
+    # if A = v_q @ chi_q, then (1-A)^{-1} = 1 + A + A^2 + A^3 + ... (iterative matrix inversion faster + more stable than direct)
+    # A^N is done with blocked GEMMs along the frequency axis; since we currently do COHSEX we set block_q=1
+    nspinor_w = chi_q.shape('nspinor1')
+    nrmu = chi_q.shape('nrmu1')
 
-#     chi_R = xp.zeros_like(G_R)
+    V_q.join('nkx', 'nky', 'nkz')
+    V_q.join('nspinor1', 'nrmu1')
+    V_q.join('nspinor2', 'nrmu2')
 
-#     G_R = G_R.reshape(1,n_spinor*n_rmu, n_spinor*n_rmu, *kgrid)
-#     G_negR = xp.ascontiguousarray(G_R.transpose(0,2,1,3,4,5))
-#     # handle kx ky kz
-#     for ik in range(3,6):
-#         G_negR = xp.flip(G_negR, axis=ik)
-#         G_negR = xp.roll(G_negR,1, axis=ik)
-#     # handle frequency
-#     G_negR = xp.flip(G_negR, axis=0)
-#     G_negR = xp.roll(G_negR,1, axis=0)
+    chi_q.join('nkx', 'nky', 'nkz')
+    chi_q.join('nspinor1', 'nrmu1')
+    chi_q.join('nspinor2', 'nrmu2')
 
-#     chi_R = G_R * G_negR
-#     chi_q = cupyx.scipy.fftpack.fftn(chi_R, axes=(3,4,5), overwrite_x=True, norm='ortho')
-#     chi_q = chi_q.reshape(1,n_spinor,n_rmu,n_spinor,n_rmu,*kgrid)
+    W_q = LabeledArray(shape=(*wfn.kgrid, 1, nspinor_w, nrmu, nspinor_w, nrmu), axes=('nkx', 'nky', 'nkz', 'nfreq','nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'))
+    W_q.join('nkx', 'nky', 'nkz')
+    W_q.join('nspinor1', 'nrmu1')
+    W_q.join('nspinor2', 'nrmu2')
+    
+    nk_tot, nfreq, N, _ = chi_q.data.shape
 
-#     return chi_q
+    # pick a block‐size along the frequency axis
+    if block_f is None:
+        # e.g. cap at 128 MB of scratch:
+        max_bytes = 128 * 1024**2
+        per_mat   = 16 * N * N       # bytes per (N×N) complex128
+        block_f   = max(1, int(max_bytes // per_mat))
+    block_f = min(block_f, nfreq)
+
+    # allocate scratch buffers once
+    A   = xp.empty((block_f, N, N), dtype=xp.complex128)
+    Wb  = xp.empty((block_f, N, N), dtype=xp.complex128)
+    I   = xp.eye(N, dtype=xp.complex128)[None, :, :]
+
+    # loop over q‐points
+    for iq in range(nk_tot):
+        Vf = V_q.data[0,iq]  # shape = (N, N)
+        ch = chi_q.data[iq]  # shape = (nfreq, N, N)
+        Wf = W_q.data[iq]    # shape = (nfreq, N, N)
+
+        # chunk over freq‐axis
+        for f0 in range(0, nfreq, block_f):
+            f1 = min(f0+block_f, nfreq)
+            B  = f1 - f0
+
+            cb = ch[f0:f1]      # (B, N, N)
+            wb = Wb[:B]         # view into scratch
+            a  = A[:B]
+
+            # 1) A := Vb @ cb
+            xp.matmul(Vf, cb, out=a)
+
+            # 2) Wb := I + A
+            wb[:] = I           # broadcast eye
+            wb  += a
+
+            # 3) Build powers A^2 … A^(n_mult+1)
+            P = a.copy()        # P == A^1
+            for _ in range(n_mult):
+                xp.matmul(P, cb, out=P)
+                wb += P
+
+            # 4) Multiply by Vb → W = (1 - Vχ)^(-1) V
+            xp.matmul(wb, Vf, out=wb)
+
+            # 5) write‐back
+            Wf[f0:f1] = wb
+
+    W_q.unjoin('nkx', 'nky', 'nkz')
+    #W_q.kgrid_to_last()
+    #W_q.ifft_kgrid() # W_q -> W_R
+    W_q.unjoin('nspinor1', 'nrmu1')
+    W_q.unjoin('nspinor2', 'nrmu2')
+    # could do W_q -> W_R here but it's already done in the get_sigma function
+    W_q = W_q.transpose('nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+
+    V_q.unjoin('nkx', 'nky', 'nkz')
+    V_q.unjoin('nspinor1', 'nrmu1')
+    V_q.unjoin('nspinor2', 'nrmu2')
+
+    return W_q
 
 
-# def get_static_w_q(chi_R, V_qmunu, sym, xp):
-#     # w_q(omega) = (1-v_q chi_q)^{-1} v_q
-
-#     w_q = xp.zeros_like(chi_R) # has spinor components
-
-
-
-
-# if __name__ == "__main__":
-#     wfn = WFNReader("WFN.h5")
-#     sym = symmetry_maps.SymmetryMap(wfn.structure)
-#     G_R = wfn.get_G_R()
-#     chi_q = get_static_chi_q(wfn, sym, G_R, xp)
-#     print(chi_q.shape)
 

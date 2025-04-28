@@ -7,7 +7,7 @@ import symmetry_maps
 import cupyx.scipy.fftpack
 from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
-from w_isdf import get_chi0
+from w_isdf import get_chi0, get_static_w_q
 import h5py
 #import matplotlib.pyplot as plt
 if cp.cuda.is_available():
@@ -715,8 +715,9 @@ if __name__ == "__main__":
         V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
 
     chi0 = get_chi0(psi_l_rmu_out, psi_r_rmu_out, window_pairs, wfn, xp)
-    print("chi0 elements:")
-    print(chi0.data[0,0,0,:2,:2])
+    # hyperparameters: (1-vX)^-1 = sum_n=0,n_mult (vX)^n, block_f is how many freqs are batched for inversion
+    W_q = get_static_w_q(chi0, V_qmunu, wfn, sym, xp, n_mult=10, block_f=1)
+
 
     psi_l_rmu_out.psi = psi_l_rmu_out.psi.slice('nb',xp.s_[:wfn.nelec],tagged=True)
     psi_r_rmu_out.psi = psi_r_rmu_out.psi.slice('nb',xp.s_[:nval+ncond],tagged=True)
@@ -729,7 +730,11 @@ if __name__ == "__main__":
     ####################################
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
     ####################################
-    sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, V_qmunu, xp)
+    do_screened = True
+    if do_screened:
+        sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, W_q, xp)
+    else:
+        sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, V_qmunu, xp)
     sigma_x_kbar_ij = get_sigma_x_kij(psi_r_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, xp)
 
 
