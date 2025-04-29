@@ -1,6 +1,6 @@
 import numpy as np
 import cupy as cp
-import cupyx.scipy.fftpack as cufft
+import cupyx.scipy.fft as cufft
 from numpy import s_
 from typing import Union
 if cp.is_available():
@@ -189,7 +189,7 @@ class LabeledArray:
         func = cufft.ifftn if inverse else cufft.fftn
 
         # Do in-place FFT by reassigning to self.data
-        self.data[...] = func(self.data, axes=k_idxs, plan=plan, overwrite_x=True)
+        self.data[...] = func(self.data, axes=k_idxs, norm='ortho', plan=plan, overwrite_x=True)
 
     def __repr__(self):
         return f"LabeledArray(shape={self.data.shape}, axes={self.axes}, joined_axes={self.joined_axes})"

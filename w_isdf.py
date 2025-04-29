@@ -36,8 +36,8 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 
     # Iterate over k-points
     for ik in range(psi_v.psi.shape('nk')):
-        # Mask for energies within the valence window
-        val_mask = (psi_v.enk.data[ik] > win.val_window.start_energy) & (psi_v.enk.data[ik] <= win.val_window.end_energy)
+        # Mask for energies within the valence window (windows are inclusive)
+        val_mask = (psi_v.enk.data[ik] >= win.val_window.start_energy) & (psi_v.enk.data[ik] <= win.val_window.end_energy)
         
         # Select wavefunctions and energies for the current k-point
         psi_v_selected = psi_v.psi.data[ik,val_mask]
@@ -52,7 +52,7 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 
     # Similar process for conduction bands
     for ik in range(psi_c.psi.shape('nk')):
-        cond_mask = (psi_c.enk.data[ik] > win.cond_window.start_energy) & (psi_c.enk.data[ik] <= win.cond_window.end_energy)
+        cond_mask = (psi_c.enk.data[ik] >= win.cond_window.start_energy) & (psi_c.enk.data[ik] <= win.cond_window.end_energy)
         
         psi_c_selected = psi_c.psi.data[ik, cond_mask]
         exp_c_selected = exp_tauE_c[:,ik, cond_mask]
@@ -88,8 +88,9 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
             chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
 
     # note it would be more efficient to only fft chi0 in get_chi0
-    chi_lm_Yt.fft_kgrid() # chi_R -> chi_k
+    chi_lm_Yt.fft_kgrid() # chi_R -> chi_q
     chi_lm_Yt = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    chi_lm_Yt.data *= 1./(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2])
     return chi_lm_Yt
 
 

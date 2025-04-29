@@ -207,6 +207,9 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         else:
             psi_rtot_out[k_idx] = psi_rtot
 
+    psi_rtot_out *= xp.sqrt(n_rtot) # fixes to unit norm
+    #print("norm of one wfn:", xp.linalg.norm(psi_rtot_out[0,0]))
+
 def get_enk_bandrange(wfn, sym, bandrange, xp):
     nb = bandrange[1] - bandrange[0]
     en_irk = xp.asarray(wfn.energies[0,:,bandrange[0]:bandrange[1]])
@@ -218,7 +221,7 @@ def get_enk_bandrange(wfn, sym, bandrange, xp):
 
     return enk
 
-def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
+def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
     n_rtot = int(np.prod(wfn.fft_grid))
@@ -334,7 +337,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
 
         for mu in xp.ndindex(zeta_q.shape[0]):
             zeta_q[mu] = xp.fft.fftn(zeta_q[mu])
-        zeta_q *= n_rtot
+        #zeta_q *= xp.sqrt(1./n_rtot) # unitary FFT
 
         #####################################
         # now, get this V_qG from the stored V_qbarG array by remapping G components.
@@ -373,12 +376,14 @@ def get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, bandrange_l, band
     wfn_l = WfnArray(psi_l_rmu_out, enk_l)
     wfn_r = WfnArray(psi_r_rmu_out, enk_r)
 
+    #V_qmunu.data *= sym.nk_tot
+
     return V_qmunu, wfn_l, wfn_r
 
 
 # G_(kab)(mu,nu,t=0) = \sum_mn psi^*_mk(r_mu) * psi_nk(r_nu) (n restricted to range of psi_rmu)
 # k goes over kfull
-def get_G_mu_nu(wfn, psi_l, psi_r, n_rmu, xp, Gkij=None, return_R=False):
+def get_G_mu_nu(wfn, psi_l, psi_r, xp, Gkij=None, return_R=False):
     # using xp to wrap cupy/numpy, calculate:
     # take the matrix psi with shape (nkpts, nbands, nspinor, nrmu) and do:
     # G_{k,a,b}(mu,nu) = \sum_mnab psi^*_mka(r_mu) * psi_nkb(r_nu) (matmul)
@@ -430,7 +435,6 @@ def get_G_mu_nu(wfn, psi_l, psi_r, n_rmu, xp, Gkij=None, return_R=False):
 
 
 def get_G_R(Gk):
-    # indices here are (nfreq, nkx, nky, nkz, nspin, nrmu, nspin, nrmu)
     # Reorder axes to have kgrid last (batch fft mem locality)
     Gk = Gk.kgrid_to_last()
     Gk.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')  # shape (nfreq*nspin*nrmu*nspin*nrmu, *kgrid)
@@ -445,7 +449,7 @@ def get_G_R(Gk):
 
 # get the real-space sigma_\alpha\beta(r,r'(omega))
 # options being X, SX, COH
-def get_sigma_x_mu_nu(wfn, sym, G_R, V_q, xp):
+def get_sigma_x_mu_nu(G_R, V_q, xp):
     # sigma_kbar,ab = \sum_(set of k_i = kbar S_i) \sum_qbar G_(k-qbar,ab)(mu,nu) V_qbar(mu,nu)
     # trying in real space! \sum_R G_R W_R. woohoo
 
@@ -464,10 +468,10 @@ def get_sigma_x_mu_nu(wfn, sym, G_R, V_q, xp):
     sigma_R.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
     sigma_R.fft_kgrid()
     sigma_R.unjoin('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
-    sigma_R.transpose('nfreq','nkx','nky','nkz','nspinor1','nrmu1','nspinor2','nrmu2')
+    sigma_R = sigma_R.transpose('nfreq','nkx','nky','nkz','nspinor1','nrmu1','nspinor2','nrmu2')
     sigma_R.join('nkx','nky','nkz')
 
-    sigma_R.data *= -sym.nk_tot
+    #sigma_R.data *= -xp.sqrt(sym.nk_tot) # due to norm ortho... unclear
     return sigma_R
 
 
@@ -642,18 +646,18 @@ if __name__ == "__main__":
     ncond = 5
     nband = 110
 
-    sys_dim = 2 # 3 for 3D, 2 for 2D
+    sys_dim = 2 # 3 for 3D, 2 for 2D (only 2D coulomb interaction implemented currently)
 
     ryd2ev = 13.6056980659
 
     wfn = WFNReader("WFN.h5")
-    wfnq = WFNReader("WFNq.h5")
-    eps0 = EPSReader("eps0mat.h5")
-    eps = EPSReader("epsmat.h5")
+    #wfnq = WFNReader("WFNq.h5")
+    #eps0 = EPSReader("eps0mat.h5")
+    #eps = EPSReader("epsmat.h5")
     sym = symmetry_maps.SymMaps(wfn)
-    q0 = wfnq.kpoints[0] - wfn.kpoints[0]
-    if np.linalg.norm(q0) > 1e-6:
-        print(f'Using q0 = ({q0[0]:.5f}, {q0[1]:.5f}, {q0[2]:.5f})')
+    #q0 = wfnq.kpoints[0] - wfn.kpoints[0]
+    #if np.linalg.norm(q0) > 1e-6:
+    #    print(f'Using q0 = ({q0[0]:.5f}, {q0[1]:.5f}, {q0[2]:.5f})')
 
     nvrange, ncrange, nsigmarange, n_fullrange, n_valrange = get_bandranges(nval, ncond, nband, wfn.nelec)
     nvplussigrange = (min(n_valrange),max(nsigmarange))
@@ -698,18 +702,18 @@ if __name__ == "__main__":
     ####################################
     # 1.) get (truncated in 2D) coulomb potential v_q(G) and W_q=0(G=G'=0) element
     ####################################
-        V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
+        #V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
+        V_qG, wcoul0 = get_V_qG(wfn, sym,(0.001,0.,0.), xp, 0.2, sys_dim)
 
 
     ####################################
-    # 2.) get interpolative separable density fitting basis functions zeta_q,mu(r)
-    # 3.) only store V_q,mu,nu in memory so no need to store all zeta_q,mu(r)
+    # 2.) get interpolative separable density fitting basis functions zeta_q,mu(r) and <mu|V_q|nu>
     ####################################
         if x_only:
-            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
+            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
             write_labeled_arrays_to_h5("taggedarrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
         else:
-            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, wfnq, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
+            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
             write_labeled_arrays_to_h5("taggedarrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
     elif restart and not x_only:
         V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
@@ -725,16 +729,16 @@ if __name__ == "__main__":
     #################################### 
     # 4.) get G_k(r_mu,r_nu) for valence bands
     ####################################
-    G_R_val_mu_nu = get_G_mu_nu(wfn, psi_l_rmu_out, psi_l_rmu_out, n_rmu, xp, return_R=True)
+    G_R_val_mu_nu = get_G_mu_nu(wfn, psi_l_rmu_out, psi_l_rmu_out, xp, return_R=True)
 
     ####################################
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
     ####################################
     do_screened = True
     if do_screened:
-        sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, W_q, xp)
+        sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, W_q, xp)
     else:
-        sigma_x_kbar_munu = get_sigma_x_mu_nu(wfn, sym, G_R_val_mu_nu, V_qmunu, xp)
+        sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, V_qmunu, xp)
     sigma_x_kbar_ij = get_sigma_x_kij(psi_r_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, xp)
 
 
