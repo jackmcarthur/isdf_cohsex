@@ -221,6 +221,67 @@ def get_enk_bandrange(wfn, sym, bandrange, xp):
 
     return enk
 
+def get_WminV_qGG(wfn, iqbar, eps0mat, epsmat,xp):
+    # get correct qpt index.
+    # handle the existence of eps0mat vs epsmat
+    if iqbar == 0:
+        eps = eps0mat
+        iqbareps = xp.int32(0)
+    else:
+        eps = epsmat
+        iqbareps = xp.int32(iqbar-1)
+
+    if iqbar > 0 and not xp.allclose(wfn.kpoints[iqbar], eps.qpts[iqbareps]):
+        print(f"q-point mismatch at index {iqbar}:")
+        print(f"WFN q-point: {wfn.kpoints[iqbar]}")
+        print(f"EPS q-point: {eps.qpts[iqbareps]}")
+
+        print(f"Difference: {wfn.kpoints[iqbar] - eps.qpts[iqbareps]}")
+        raise ValueError("WFN and EPS q-points do not match!")
+
+    G_qbar_comps = xp.asarray(wfn.get_gvec_nk(iqbar), dtype=xp.int32)
+    vcoul_G_q_comps_compare = xp.dot(G_qbar_comps, xp.array([1, 1000, 1000000]))
+
+    eps_G_qbar_comps = xp.asarray(eps.unfold_eps_comps(iqbareps, sym.sym_mats_k[0], np.array([0.,0.,0.])),dtype=xp.int32)
+    eps_G_qbar_comps_compare = xp.dot(eps_G_qbar_comps, xp.array([1, 1000, 1000000]))
+
+    perm = xp.argsort(vcoul_G_q_comps_compare)
+    sorted_vcoul_compare = vcoul_G_q_comps_compare[perm]
+    # For each eps key, find its location in the sorted vcoul array:
+    idx = xp.searchsorted(sorted_vcoul_compare, eps_G_qbar_comps_compare)
+    # (Optional) Verify that every eps key is found in vcoul:
+    if not xp.all(sorted_vcoul_compare[idx] == eps_G_qbar_comps_compare):
+        raise ValueError("Not all eps keys were found in vcoul keys.")
+
+    # Map back to the original indices in vcoul:
+    vcoul_eps_inds = perm[idx]
+    v_qG_epsorder = xp.zeros(eps_G_qbar_comps.shape[0],dtype=xp.complex128) # values are real, just use cplx dtype
+    v_qG_epsorder[:] = xp.asarray(V_qG[iqbar][vcoul_eps_inds])
+    #print(f"mean error in vcoul for qpt {iqbar}: {np.mean(v_qG_epsorder.get()[1:]-eps.vcoul[iqbareps,1:v_qG_epsorder.shape[0]])}")
+    ######################################################
+
+
+
+
+    WminV= xp.asarray(eps.get_eps_minus_delta_matrix(iqbareps),dtype=xp.complex128) 
+
+    # the following replicates BGW's fixwings.f90: (since epsilon.x doesn't use minibzaverage for vcoul but sigma.x does)
+    G0_idx = xp.int32(np.where(eps.gind_eps2rho[iqbareps,:100] == 0)[0][0])
+    if iqbar == 0:
+        # head
+        WminV[G0_idx,G0_idx] = wcoul0/v_qG_epsorder[G0_idx] - 1. # -1 because of delta
+
+        # wing, wing' (the argument is: this is zeroed because it has vanishing phase space for large N_k? Baldereschi & Tosatti 1978)
+        WminV[G0_idx,:G0_idx] = 0.0+0.0j
+        WminV[G0_idx,G0_idx+1:] = 0.0+0.0j
+
+        WminV[:G0_idx,G0_idx] = 0.0+0.0j
+        WminV[G0_idx+1:,G0_idx] = 0.0+0.0j
+
+    WminV *= v_qG_epsorder[:,xp.newaxis]
+
+    return WminV
+
 def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
@@ -341,6 +402,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
 
         #####################################
         # now, get this V_qG from the stored V_qbarG array by remapping G components.
+        # from here down is where reordering for the eps components will be necessary.
         #####################################
         qveccrys = xp.divide(xp.asarray(qvec, dtype=xp.float64), kgridgpu)
         q_rounded = xp.round(qveccrys)
@@ -362,6 +424,12 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
         temp = xp.multiply(V_qfullG[:, None], zeta_qG_mu.T)
         V_qmunu.data[0,*qvec_nonneg,0,:,0,:] = xp.matmul(xp.conj(zeta_qG_mu), temp)
 
+        #####################################
+        # If desired (for debugging), read the BGW eps(0)mat.h5 file and use it to calculate E_QPs.
+        #####################################
+        #if read_eps == True:
+        #    WminV = get_WminV_qGG(wfn,iqbar,eps0mat,epsmat,xp)
+
         print(f"qpoint {iq} done")
 
     psi_l_rmu_out.data = psi_l_rtot_out.slice_many({'rx': centroid_indices[:, 0], 'ry': centroid_indices[:, 1], 'rz': centroid_indices[:, 2]})
@@ -377,6 +445,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
     wfn_r = WfnArray(psi_r_rmu_out, enk_r)
 
     #V_qmunu.data *= sym.nk_tot
+    #V_qmunu.data *= -1.0
 
     return V_qmunu, wfn_l, wfn_r
 
@@ -471,7 +540,8 @@ def get_sigma_x_mu_nu(G_R, V_q, xp):
     sigma_R = sigma_R.transpose('nfreq','nkx','nky','nkz','nspinor1','nrmu1','nspinor2','nrmu2')
     sigma_R.join('nkx','nky','nkz')
 
-    #sigma_R.data *= -xp.sqrt(sym.nk_tot) # due to norm ortho... unclear
+    sigma_R.data *= -xp.sqrt(sym.nk_tot) # due to norm ortho... unclear
+    #sigma_R.data *= -1.0
     return sigma_R
 
 
@@ -685,15 +755,15 @@ if __name__ == "__main__":
     for i, pair in enumerate(window_pairs, start=1):
         val_window = pair.val_window
         cond_window = pair.cond_window
-        print(f"\nPair {i}")
-        print(f"{'Valence Emin':<15}{'Valence Emax':<15}{'Cond Emin':<15}{'Cond Emax':<15}{'z_lm':<10}")
-        print(f"{val_window.start_energy:<15.3f}{val_window.end_energy:<15.3f}{cond_window.start_energy:<15.3f}{cond_window.end_energy:<15.3f}{pair.z_lm:<10.3f}")
+        # print(f"\nPair {i}")
+        # print(f"{'Valence Emin':<15}{'Valence Emax':<15}{'Cond Emin':<15}{'Cond Emax':<15}{'z_lm':<10}")
+        # print(f"{val_window.start_energy:<15.3f}{val_window.end_energy:<15.3f}{cond_window.start_energy:<15.3f}{cond_window.end_energy:<15.3f}{pair.z_lm:<10.3f}")
         
-        print("tau_i")
-        print(" ".join(f"{tau:.3f}" for tau in pair.tau_i))
+        # print("tau_i")
+        # print(" ".join(f"{tau:.3f}" for tau in pair.tau_i))
         
-        print("w_i")
-        print(" ".join(f"{w:.3f}" for w in pair.w_i))
+        # print("w_i")
+        # print(" ".join(f"{w:.3f}" for w in pair.w_i))
     print('\n')
 
     restart = True

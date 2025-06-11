@@ -89,9 +89,11 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 
     # note it would be more efficient to only fft chi0 in get_chi0
     chi_lm_Yt.fft_kgrid() # chi_R -> chi_q
-    chi_lm_Yt = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
-    chi_lm_Yt.data *= 1./(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2])
-    return chi_lm_Yt
+    chi_out = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),-1))
+    xp.multiply(chi_out.data, oneoverkgrid, out=chi_out.data)
+    print('one chi_lm element ', chi_out.data[0,0,0,0,0,0,0,0].get())
+    return chi_out.data
 
 
 # sums contributions from all windows
@@ -106,12 +108,12 @@ def get_chi0(psi_v, psi_c, windows, wfn, xp):
     for win in windows:
         chi_lm = get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp)
         # -2 z_lm w_i exp(-(z_lm (E_c - E_v) - 1) tau_i)
-        quad_weights = xp.asarray(-2*win.z_lm*win.w_i*np.exp(-(win.z_lm * (win.cond_window.start_energy - win.val_window.end_energy)-1.)*win.tau_i),dtype=xp.complex128)
+        quad_weights = xp.asarray(-2.*win.z_lm*win.w_i*np.exp(-(win.z_lm*(win.cond_window.start_energy - win.val_window.end_energy)-1.)*win.tau_i),dtype=xp.complex128)
+        # note that doing += doesn't work because it's not a cupy fn 
+        xp.add(chi0.data[0,:,:,:,:,:,:,:], xp.einsum('t,ti...->i...', quad_weights, chi_lm), out=chi0.data[0,:,:,:,:,:,:,:])
 
-        chi0.data[0] += xp.einsum('t,ti...->i...', quad_weights, chi_lm.data)
-
-    chi0 = chi0.transpose('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
-    return chi0
+    chi = chi0.transpose('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    return chi
 
 def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     # w_q(omega) = (1-v_q @ chi_q)^{-1} @ v_q
@@ -119,6 +121,7 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     # A^N is done with blocked GEMMs along the frequency axis; since we currently do COHSEX we set block_q=1
     nspinor_w = chi_q.shape('nspinor1')
     nrmu = chi_q.shape('nrmu1')
+    print('one chi element: ', chi_q.data[0,0,0,0,0,0,0,0].get())
 
     V_q.join('nkx', 'nky', 'nkz')
     V_q.join('nspinor1', 'nrmu1')
@@ -146,6 +149,7 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     # allocate scratch buffers once
     A   = xp.empty((block_f, N, N), dtype=xp.complex128)
     Wb  = xp.empty((block_f, N, N), dtype=xp.complex128)
+    P   = xp.empty((block_f, N, N), dtype=xp.complex128)
     I   = xp.eye(N, dtype=xp.complex128)[None, :, :]
 
     # loop over q‐points
@@ -168,19 +172,24 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
 
             # 2) Wb := I + A
             wb[:] = I           # broadcast eye
-            wb  += a
+            wb += a
 
             # 3) Build powers A^2 … A^(n_mult+1)
-            P = a.copy()        # P == A^1
-            for _ in range(n_mult):
-                xp.matmul(P, cb, out=P)
+            # P = a.copy()        # P == A^1
+            # for _ in range(n_mult):
+            #     xp.matmul(P, cb, out=P)
+            #     wb += P
+            cb = a.copy() # chi array now contains vchi
+            for _ in range(n_mult-1):
+                xp.matmul(cb, a, out=P)
                 wb += P
-
+                cb = P.copy()
+                print('mtx norm P: ', xp.linalg.norm(P))
             # 4) Multiply by Vb → W = (1 - Vχ)^(-1) V
-            xp.matmul(wb, Vf, out=wb)
+            xp.matmul(wb, Vf, out=Wf[f0:f1])
 
             # 5) write‐back
-            Wf[f0:f1] = wb
+            #Wf[f0:f1] = wb
 
     W_q.unjoin('nkx', 'nky', 'nkz')
     #W_q.kgrid_to_last()
@@ -188,13 +197,13 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     W_q.unjoin('nspinor1', 'nrmu1')
     W_q.unjoin('nspinor2', 'nrmu2')
     # could do W_q -> W_R here but it's already done in the get_sigma function
-    W_q = W_q.transpose('nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    W = W_q.transpose('nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
 
     V_q.unjoin('nkx', 'nky', 'nkz')
     V_q.unjoin('nspinor1', 'nrmu1')
     V_q.unjoin('nspinor2', 'nrmu2')
 
-    return W_q
+    return W
 
 
 

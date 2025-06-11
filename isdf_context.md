@@ -69,4 +69,11 @@ SigmaX[t,i,j,kx,ky,kz] = \sum_s,s',r_mu,r_nu psi\*_mk,s(r_mu) sigmaX[t,kx,ky,kz,
 7. Though not implemented currently, there will be a transform from sigmaX[t] to sigmaX[w] by a sine/cosine 
 transform procedure.
 
+8. This is not the next step chronologically, but to get the zero-freq. screened interaction, we compute 
+Chi[t,r,r',Rx,Ry,Rz] = \sum_ab G[t,Rx,Ry,Rz,a,r,b,r'] G[-t,-Rx,-Ry,-Rz,b,r',a,r]
+(the formula can be interpreted as prob. of an electron propagating from ra->R+r'b and back. Since G has a step
+function so that for t>0, G is a sum over valence bands and for t<0 it's a sum over conduction bands (Temp=0), we actually write the zero frequency Chi as G_occ * G_unocc, with no energy 
+We then do the Fourier transform:
+Chi[t,r,r',Rx,Ry,Rz] =>
+
 
