@@ -1,11 +1,13 @@
 import numpy as np
-import cupy as cp
-from wfnreader import WFNReader
-
-if cp.cuda.is_available():
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
+    # Fall back to NumPy if CuPy is unavailable or no GPU is present
+    cp = None
     xp = np
+from wfnreader import WFNReader
 
 class SymMaps:
     def __init__(self, wfn):

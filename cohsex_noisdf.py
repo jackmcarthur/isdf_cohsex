@@ -1,14 +1,16 @@
 import numpy as np
-import cupy as cp
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
+    xp = cp
+except Exception:
+    cp = None
+    xp = np
 from wfnreader import WFNReader
 from epsreader import EPSReader
 import fftx
 import symmetry_maps
 import matplotlib.pyplot as plt
-if cp.cuda.is_available():
-    xp = cp
-else:
-    xp = np
 
 # return ranges of bands necessary for \sigma_{X,SX,COH}
 def get_bandranges(nv,nc,nband,nelec):

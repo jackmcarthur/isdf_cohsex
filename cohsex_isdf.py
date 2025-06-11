@@ -1,5 +1,11 @@
 import numpy as np
-import cupy as cp
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
+    xp = cp
+except Exception:
+    cp = None
+    xp = np
 from wfnreader import WFNReader
 from epsreader import EPSReader
 import fftx
@@ -10,10 +16,6 @@ from get_windows import get_window_info
 from w_isdf import get_chi0, get_static_w_q
 import h5py
 #import matplotlib.pyplot as plt
-if cp.cuda.is_available():
-    xp = cp
-else:
-    xp = np
 
 # Using the xp alias keeps the code agnostic to NumPy/CuPy, enabling testing on
 # CPUs while still targeting GPU acceleration.
@@ -717,12 +719,15 @@ def read_labeled_arrays_from_h5(filename):
 
 if __name__ == "__main__":
     # Check GPU availability
-    if cp.cuda.is_available():
-        print(f"Using GPU: {cp.cuda.runtime.getDeviceProperties(0)['name']}")
-        mem_info = cp.cuda.runtime.memGetInfo()
-        print(f"Memory Usage: {(mem_info[1] - mem_info[0])/1024**2:.1f}MB / {mem_info[1]/1024**2:.1f}MB")
-        xp = cp
-    else:
+    try:
+        if cp is not None and cp.cuda.is_available():
+            print(f"Using GPU: {cp.cuda.runtime.getDeviceProperties(0)['name']}")
+            mem_info = cp.cuda.runtime.memGetInfo()
+            print(f"Memory Usage: {(mem_info[1] - mem_info[0])/1024**2:.1f}MB / {mem_info[1]/1024**2:.1f}MB")
+            xp = cp
+        else:
+            raise RuntimeError
+    except Exception:
         print("Using CPU (NumPy)")
         xp = np
 
@@ -751,9 +756,15 @@ if __name__ == "__main__":
     centroids_frac = np.loadtxt('centroids_frac.txt')
     n_rmu = int(centroids_frac.shape[0])
 
-    if cp.cuda.is_available():
-        centroids_frac = cp.asarray(centroids_frac, dtype=cp.float32)
-        fft_grid = cp.asarray(wfn.fft_grid, dtype=cp.int32)
+    try:
+        if cp is not None and cp.cuda.is_available():
+            centroids_frac = cp.asarray(centroids_frac, dtype=cp.float32)
+            fft_grid = cp.asarray(wfn.fft_grid, dtype=cp.int32)
+        else:
+            raise RuntimeError("CUDA not available")
+    except Exception:
+        # Fallback to CPU when no GPU is present
+        fft_grid = xp.asarray(wfn.fft_grid, dtype=xp.int32)
     centroid_indices = xp.round(centroids_frac * fft_grid).astype(int)
     # Replace any index equal to the grid size with 0 (periodic boundary)
     for i in range(3):

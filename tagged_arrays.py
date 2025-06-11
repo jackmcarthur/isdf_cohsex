@@ -1,12 +1,14 @@
 import numpy as np
-import cupy as cp
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
+    xp = cp
+except Exception:
+    cp = None
+    xp = np
 import cupyx.scipy.fft as cufft
 from numpy import s_
 from typing import Union
-if cp.is_available():
-    xp = cp
-else:
-    xp = np
 
 ## LabeledArray module
 """

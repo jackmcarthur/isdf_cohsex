@@ -1,5 +1,9 @@
 import numpy as np
-import cupy as cp
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
+except Exception:
+    cp = None
 import h5py as h5
 import fftx 
 import datetime
@@ -124,9 +128,12 @@ def analyze_gvectors(gvecs):
 if __name__ == "__main__":
 
     # check for CUDA
-    if cp.cuda.is_available():
-        xp = cp
-    else:
+    try:
+        if cp is not None and cp.cuda.is_available():
+            xp = cp
+        else:
+            raise cp.cuda.runtime.CUDARuntimeError
+    except Exception:
         xp = np
     
     print(f"Beginning charge density calculation. Using {xp.__name__} backend.")

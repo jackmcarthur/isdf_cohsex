@@ -19,13 +19,10 @@ from scipy.special import roots_laguerre
 # Try to import CuPy; fall back to NumPy
 try:
     import cupy as cp
-except ImportError:
-    cp = None
-
-# Select xp = cp (if available & GPU) or np
-if cp is not None and cp.cuda.is_available():
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
+    cp = None
     xp = np
 
 class GL_window:

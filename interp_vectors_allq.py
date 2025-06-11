@@ -1,16 +1,17 @@
 import numpy as np
-import cupy as cp
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()
+    xp = cp
+except Exception:
+    cp = None
+    xp = np
 import h5py
 from wfnreader import WFNReader
 #from get_charge_density import perform_fft_3d
 import fftx
 import symmetry_maps
 #import matplotlib.pyplot as plt
-
-if cp.cuda.is_available():
-    xp = cp
-else:
-    xp = np
 
 
 def fft_bandrange(wfn, sym, bandrange, centroid_indices, is_left, psi_rtot_out, xp=cp):
