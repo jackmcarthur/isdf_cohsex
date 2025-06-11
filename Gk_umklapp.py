@@ -49,7 +49,7 @@ if __name__ == "__main__":
     centroids_frac = np.loadtxt('centroids_frac.txt')
     n_rmu = int(centroids_frac.shape[0])
 
-    if cp.cuda.is_available():
+    if cp is not None and cp.cuda.is_available():
         centroids_frac = cp.asarray(centroids_frac, dtype=cp.float32)
         fft_grid = cp.asarray(wfn.fft_grid, dtype=cp.int32)
     centroid_indices = xp.round(centroids_frac * fft_grid).astype(int)

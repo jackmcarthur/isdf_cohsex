@@ -6,7 +6,21 @@ try:
 except Exception:
     cp = None
     xp = np
-import cupyx.scipy.fft as cufft
+try:
+    import cupyx.scipy.fft as cufft
+except Exception:
+    import numpy.fft as _np_fft
+    class _DummyFFT:
+        def fftn(self, *args, **kwargs):
+            return _np_fft.fftn(*args, **kwargs)
+
+        def ifftn(self, *args, **kwargs):
+            return _np_fft.ifftn(*args, **kwargs)
+
+        def get_fft_plan(self, *args, **kwargs):
+            return None
+
+    cufft = _DummyFFT()
 from numpy import s_
 from typing import Union
 
@@ -58,7 +72,7 @@ class LabeledArray:
         elif axes is not None and shape is not None:
             # interpret None as newaxis (size 1)
             shape_resolved = tuple(1 if dim is None else dim for dim in shape)
-            self.xp = cp if cp.is_available() else np
+            self.xp = cp if cp is not None and cp.is_available() else np
             self.data = self.xp.zeros(shape_resolved, dtype=dtype)
             self.axes = list(axes)
         else:

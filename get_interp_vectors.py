@@ -28,7 +28,7 @@ def build_interp_array(wfn, sym, centroid_indices):
     psi_real_space = np.zeros((nk_tot, nb, 2, *wfn.fft_grid), dtype=np.complex128)
     
     # Move to GPU if available
-    if cp.cuda.is_available():
+    if cp is not None and cp.cuda.is_available():
         sym.R_grid = cp.asarray(sym.R_grid)
         sym.Rinv_grid = cp.asarray(sym.Rinv_grid)
         sym.U_spinor = cp.asarray(sym.U_spinor)
@@ -40,7 +40,7 @@ def build_interp_array(wfn, sym, centroid_indices):
     for ik in range(nk_red):
         # Get G-vectors for this k-point
         gvecs_k = wfn.get_gvec_nk(ik)
-        if cp.cuda.is_available():
+        if cp is not None and cp.cuda.is_available():
             gvecs_k = cp.asarray(gvecs_k)
         
         # Get symmetry operations for this k-point
@@ -59,7 +59,7 @@ def build_interp_array(wfn, sym, centroid_indices):
             for ib in range(nb):
                 # Get coefficients for this band
                 coeffs_kb = wfn.get_cnk(ik, ib)
-                if cp.cuda.is_available():
+                if cp is not None and cp.cuda.is_available():
                     coeffs_kb = cp.asarray(coeffs_kb)
                 
                 # Apply symmetry operation to coefficients
@@ -74,14 +74,14 @@ def build_interp_array(wfn, sym, centroid_indices):
                     psi_r *= cp.sqrt(N) 
                     
                     # Store full real-space wavefunction
-                    psi_real_space[k_idx, ib, ispinor] = psi_r.get() if cp.cuda.is_available() else psi_r
+                    psi_real_space[k_idx, ib, ispinor] = psi_r.get() if cp is not None and cp.cuda.is_available() else psi_r
                     
                     # Extract values at centroid positions
                     psi_values[k_idx, ib, ispinor] = psi_r[
                         centroid_indices[:, 0],
                         centroid_indices[:, 1],
                         centroid_indices[:, 2]
-                    ].get() if cp.cuda.is_available() else psi_r[
+                    ].get() if cp is not None and cp.cuda.is_available() else psi_r[
                         centroid_indices[:, 0],
                         centroid_indices[:, 1],
                         centroid_indices[:, 2]
@@ -157,7 +157,7 @@ def get_interp_vectors(wfn, sym, centroid_indices, bandrange_l, bandrange_r, xp)
 
     
     # Move to GPU if available
-    if cp.cuda.is_available():
+    if cp is not None and cp.cuda.is_available():
         xp = cp
         psi_l_rtot = cp.asarray(psi_l_rtot)
         psi_l_rmu = cp.asarray(psi_l_rmu)
@@ -189,7 +189,7 @@ def get_interp_vectors(wfn, sym, centroid_indices, bandrange_l, bandrange_r, xp)
     # 2*r_mu because there's implicitly r-up and r-down
     zeta = zeta.reshape(2, int(wfn.fft_grid[0]), int(wfn.fft_grid[1]), int(wfn.fft_grid[2]), 2*n_rmu)
     
-    if cp.cuda.is_available():
+    if cp is not None and cp.cuda.is_available():
         zeta = zeta.get()
     
     return zeta

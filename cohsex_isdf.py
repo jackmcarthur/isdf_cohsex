@@ -10,7 +10,6 @@ from wfnreader import WFNReader
 from epsreader import EPSReader
 import fftx
 import symmetry_maps
-import cupyx.scipy.fftpack
 from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
 from w_isdf import get_chi0, get_static_w_q
@@ -675,7 +674,7 @@ def read_labeled_arrays_from_h5(filename):
         enk_r_data = f['enk_r_data'][:]
 
         # Convert to CuPy arrays if CuPy is available
-        if cp.is_available():
+        if cp is not None and cp.is_available():
             V_qmunu_data = cp.asarray(V_qmunu_data)
             psi_l_data = cp.asarray(psi_l_data)
             psi_r_data = cp.asarray(psi_r_data)
