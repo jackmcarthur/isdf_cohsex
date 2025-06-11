@@ -5,6 +5,10 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # Import for 3D plotting
 from wfnreader import WFNReader  # Ensure wfnreader is correctly implemented or installed
 from scipy.ndimage import zoom
+# This script selects ISDF sampling points via a weighted k-means algorithm.
+# The density-driven clustering will remain relevant once the self-consistency
+# loop is introduced, since new charge densities will require recomputing these
+# centroids.
 
 def weighted_kmeans_cupy(
     avec,

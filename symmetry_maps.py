@@ -14,7 +14,10 @@ class SymMaps:
         class variables are:
         dict: irk_to_k_map[irk] = [k1, k2, k3, ...], kpt id's that map to irk
         dict: irk_sym_map[irk] = [sym1, sym2, sym3, ...], sym op sym_matrices[sym1] maps irk to ik
-        U_spinor[sym_idx] is the spinor rotation matrix for the sym_idx-th symmetry operation
+        U_spinor[sym_idx] is the spinor rotation matrix for the sym_idx-th symmetry operation.
+        The matrices are currently 2x2 Pauli-spinor rotations; upcoming work
+        will expand this to the 4-component formalism used in relativistic
+        treatments.
         R_grid[sym_idx] is the corresponding list of symmetry operations in the WFN file
         u_{n,Rk,a}(G) = U_spinor_{a,b} u_{n,k,b}(Rinv G)
         
@@ -239,6 +242,9 @@ class SymMaps:
         Converts a list of rotation matrices to their spinor representations using Markley's modification
         of Shepperd's algorithm (aka quaternion representation, see Brad Barker's dissertation).
 
+        When the wavefunction files store four-component states these routines will
+        compute the corresponding 4x4 spinor rotation matrices.
+        
         Parameters:
         sym_matrices (numpy.ndarray): Array of 3x3 rotation matrices with shape (nsym, 3, 3)
 

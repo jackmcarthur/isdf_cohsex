@@ -12,6 +12,10 @@ else:
 """
 This module defines a lightweight wrapper around NumPy/CuPy arrays that tracks named axes and supports fast, in-place operations for high-performance electronic structure computations. Axes can be reshaped, transposed, joined, sliced, and Fourier transformed by name instead of index.
 
+In upcoming versions the low-level array operations will be redirected to a
+distributed linear algebra backend developed in-house.  Keeping a thin wrapper
+around the raw arrays will make that transition mostly transparent to user code.
+
 ### Key features:
 - Named axes: access and manipulate dimensions without hardcoding index positions
 - In-place operations: `.join(...)`, `.unjoin(...)`, `.fft_kgrid()`, `.transpose(...)` mutate the array without returning a copy

@@ -2,7 +2,9 @@ import numpy as np
 import cupy as cp
 from wfnreader import WFNReader
 from tagged_arrays import LabeledArray
-#import matplotlib.pyplot as plt
+# The routines here construct chi^0 and the screened interaction W using the
+# CTSP approach in the static limit.  Once the frequency grids are restored, the
+# same machinery will let us tackle full dynamical GW.
 if cp.cuda.is_available():
     xp = cp
 else:
@@ -117,6 +119,9 @@ def get_chi0(psi_v, psi_c, windows, wfn, xp):
 
 def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     # w_q(omega) = (1-v_q @ chi_q)^{-1} @ v_q
+    # This implementation performs the CTSP matrix inversion in the static limit.
+    # Once the frequency mesh is restored this routine will compute W(omega) on
+    # the full imaginary-time grid.
     # if A = v_q @ chi_q, then (1-A)^{-1} = 1 + A + A^2 + A^3 + ... (iterative matrix inversion faster + more stable than direct)
     # A^N is done with blocked GEMMs along the frequency axis; since we currently do COHSEX we set block_q=1
     nspinor_w = chi_q.shape('nspinor1')

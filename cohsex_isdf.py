@@ -15,6 +15,14 @@ if cp.cuda.is_available():
 else:
     xp = np
 
+# Using the xp alias keeps the code agnostic to NumPy/CuPy, enabling testing on
+# CPUs while still targeting GPU acceleration.
+
+# The current implementation focuses on the static COHSEX limit.  Many of the
+# routines below (e.g. chi0 and sigma construction) are written in a style that
+# follows the complex time shredded propagator (CTSP) formulation so that we can
+# later restore full frequency dependence and iterate towards self-consistency.
+
 # return ranges of bands necessary for \sigma_{X,SX,COH}
 def get_bandranges(nv, nc, nband, nelec):
     r"""Return ranges of bands necessary for \sigma_{X,SX,COH}"""
@@ -71,6 +79,8 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim):
 
     # if sys dim == 3 return error not implemented
     if sys_dim == 3:
+        # Future versions will extend the Coulomb truncation to 3D so that
+        # layered materials and bulk systems can share the same routines.
         raise NotImplementedError("3D system calculation not yet implemented")
     #print('trying vqg')
     # get V(q,G) array for all sym-reduced q
@@ -308,6 +318,10 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
     psi_r_rmu = xp.zeros((nb_r * nspinor, n_rmu), dtype=xp.complex128)
     psi_l_rmuT = xp.zeros((n_rmu, nb_l * nspinor), dtype=xp.complex128)
     psi_r_rmuT = xp.zeros((n_rmu, nb_r * nspinor), dtype=xp.complex128)
+
+    # TODO: once the group's distributed GPU linear algebra backend is ready,
+    # these explicit buffer allocations will be refactored to call that library
+    # for improved scalability across many devices.
 
     P_l = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
     P_r = xp.zeros((n_rmu, n_rtot), dtype=xp.complex128)
@@ -813,3 +827,7 @@ if __name__ == "__main__":
 
 
     write_sigma_to_file(ryd2ev*sigma_x_kbar_ij, "eqp0_noqsym.dat")
+
+    # Later stages of this project will iterate this workflow so that the COHSEX
+    # potential feeds back into updated wavefunctions (self-consistent COHSEX)
+    # and eventually into a full quasiparticle self-consistent GW cycle.

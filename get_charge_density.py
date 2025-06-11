@@ -4,6 +4,10 @@ import h5py as h5
 import fftx 
 import datetime
 
+# Generating a reliable charge density is the first step toward self-consistent
+# COHSEX iterations.  This routine will later be called repeatedly as the
+# quasiparticle wavefunctions are updated.
+
 from wfnreader import WFNReader
 import symmetry_maps
 
