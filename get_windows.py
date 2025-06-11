@@ -4,6 +4,10 @@ get_windows.py
 
 Compute optimal energy windows for the conduction and valence bands (minimizing total quadrature points)
 for the O(N^3) polarizability and self energy calculations given in Kim, Martyna, and Ismail-Beigi, PRB 101, 035139 (2020).
+
+These energy windows also define the discrete imaginary-time grids used by the
+CTSP method.  Once we move beyond static COHSEX these same windows will control
+the frequency resolution of the full GW calculations.
 """
 
 import sys

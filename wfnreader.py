@@ -15,6 +15,10 @@ class WFNReader:
         # Kpoints group
         self.nspin = self._file['mf_header/kpoints/nspin'][()]
         self.nspinor = self._file['mf_header/kpoints/nspinor'][()]
+        # Current workflows assume two-component Pauli spinors.  Support for the
+        # four-component formalism under development will hook in here once the
+        # wavefunction files expose the extra components.  Metadata related to
+        # CTSP grids will also be parsed here when available in future files.
         self.nkpts = self._file['mf_header/kpoints/nrk'][()]  # nrk = number of k-points
         self.nbands = self._file['mf_header/kpoints/mnband'][()]  # mnband = number of bands
         self.ngkmax = self._file['mf_header/kpoints/ngkmax'][()]
