@@ -23,8 +23,12 @@ except ImportError:
     cp = None
 
 # Select xp = cp (if available & GPU) or np
-if cp is not None and cp.cuda.is_available():
-    xp = cp
+if cp is not None:
+    try:
+        cp.cuda.runtime.getDeviceCount()
+        xp = cp
+    except Exception:
+        xp = np
 else:
     xp = np
 

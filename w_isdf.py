@@ -5,9 +5,10 @@ from tagged_arrays import LabeledArray
 # The routines here construct chi^0 and the screened interaction W using the
 # CTSP approach in the static limit.  Once the frequency grids are restored, the
 # same machinery will let us tackle full dynamical GW.
-if cp.cuda.is_available():
+try:
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
     xp = np
 
 # do chi_lm,0(r,r',Yt) = \sum_ab Gc_lm,R(ra,r'b,Yt)Gv_lm,-R(r'b,ra,-Yt) (a,b=spin indices)

@@ -5,9 +5,10 @@ from epsreader import EPSReader
 import fftx
 import symmetry_maps
 import matplotlib.pyplot as plt
-if cp.cuda.is_available():
+try:
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
     xp = np
 
 # return ranges of bands necessary for \sigma_{X,SX,COH}

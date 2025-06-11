@@ -21,9 +21,11 @@ Core routines include:
 - `get_interp_vectors.py`
 - `cohsex_main.py`
 
+These supplementary scripts are now stored in the `test_scripts/` directory
+to keep the repository root focused on the main COHSEX drivers.
+
 ## Requirements:
-- the `fftx` python package, which needs to be installed with the supporting SPIRAL software and its MPI/SIMD packages
-- CuPy and available GPU
+ - CuPy (with an available GPU) or NumPy for FFT routines
 - numpy
 - scipy
 

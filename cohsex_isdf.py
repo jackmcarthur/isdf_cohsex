@@ -2,17 +2,16 @@ import numpy as np
 import cupy as cp
 from wfnreader import WFNReader
 from epsreader import EPSReader
-import fftx
 import symmetry_maps
-import cupyx.scipy.fftpack
 from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
 from w_isdf import get_chi0, get_static_w_q
 import h5py
 #import matplotlib.pyplot as plt
-if cp.cuda.is_available():
+try:
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
     xp = np
 
 # Using the xp alias keeps the code agnostic to NumPy/CuPy, enabling testing on
@@ -200,7 +199,7 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
                 # Place G-space coefficients
                 psi_rtot[ib,ispinor,gvecs_k_rot[:,0],gvecs_k_rot[:,1],gvecs_k_rot[:,2]] = psi_Gspace[ib,ispinor,:]
                 # Perform FFT
-                psi_rtot[ib,ispinor] = fftx.fft.ifftn(psi_rtot[ib,ispinor])
+                psi_rtot[ib,ispinor] = xp.fft.ifftn(psi_rtot[ib,ispinor])
 
         # multiply by exp(ikr) phase factor
         k_gpu = xp.asarray(sym.unfolded_kpts[k_idx], dtype=xp.float64)
@@ -672,13 +671,16 @@ def read_labeled_arrays_from_h5(filename):
         enk_l_data = f['enk_l_data'][:]
         enk_r_data = f['enk_r_data'][:]
 
-        # Convert to CuPy arrays if CuPy is available
-        if cp.is_available():
+        # Convert to CuPy arrays if a CUDA device is available
+        try:
+            cp.cuda.runtime.getDeviceCount()
             V_qmunu_data = cp.asarray(V_qmunu_data)
             psi_l_data = cp.asarray(psi_l_data)
             psi_r_data = cp.asarray(psi_r_data)
             enk_l_data = cp.asarray(enk_l_data)
             enk_r_data = cp.asarray(enk_r_data)
+        except Exception:
+            pass
 
         # Create LabeledArray for V_qmunu
         V_qmunu = LabeledArray(
@@ -717,12 +719,13 @@ def read_labeled_arrays_from_h5(filename):
 
 if __name__ == "__main__":
     # Check GPU availability
-    if cp.cuda.is_available():
+    try:
+        cp.cuda.runtime.getDeviceCount()
         print(f"Using GPU: {cp.cuda.runtime.getDeviceProperties(0)['name']}")
         mem_info = cp.cuda.runtime.memGetInfo()
         print(f"Memory Usage: {(mem_info[1] - mem_info[0])/1024**2:.1f}MB / {mem_info[1]/1024**2:.1f}MB")
         xp = cp
-    else:
+    except Exception:
         print("Using CPU (NumPy)")
         xp = np
 
@@ -751,9 +754,12 @@ if __name__ == "__main__":
     centroids_frac = np.loadtxt('centroids_frac.txt')
     n_rmu = int(centroids_frac.shape[0])
 
-    if cp.cuda.is_available():
+    try:
+        cp.cuda.runtime.getDeviceCount()
         centroids_frac = cp.asarray(centroids_frac, dtype=cp.float32)
         fft_grid = cp.asarray(wfn.fft_grid, dtype=cp.int32)
+    except Exception:
+        pass
     centroid_indices = xp.round(centroids_frac * fft_grid).astype(int)
     # Replace any index equal to the grid size with 0 (periodic boundary)
     for i in range(3):

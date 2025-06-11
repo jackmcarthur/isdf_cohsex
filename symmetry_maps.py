@@ -2,9 +2,10 @@ import numpy as np
 import cupy as cp
 from wfnreader import WFNReader
 
-if cp.cuda.is_available():
+try:
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
     xp = np
 
 class SymMaps:

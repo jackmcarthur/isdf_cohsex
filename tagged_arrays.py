@@ -3,9 +3,10 @@ import cupy as cp
 import cupyx.scipy.fft as cufft
 from numpy import s_
 from typing import Union
-if cp.is_available():
+try:
+    cp.cuda.runtime.getDeviceCount()
     xp = cp
-else:
+except Exception:
     xp = np
 
 ## LabeledArray module
@@ -56,7 +57,11 @@ class LabeledArray:
         elif axes is not None and shape is not None:
             # interpret None as newaxis (size 1)
             shape_resolved = tuple(1 if dim is None else dim for dim in shape)
-            self.xp = cp if cp.is_available() else np
+            try:
+                cp.cuda.runtime.getDeviceCount()
+                self.xp = cp
+            except Exception:
+                self.xp = np
             self.data = self.xp.zeros(shape_resolved, dtype=dtype)
             self.axes = list(axes)
         else:
@@ -185,15 +190,17 @@ class LabeledArray:
         self._apply_fft_inplace(['nkx', 'nky', 'nkz'], inverse=True)
 
     def _apply_fft_inplace(self, k_axes, inverse=False):
-        if self.xp is not cp:
-            raise RuntimeError("fft_kgrid/ifft_kgrid requires CuPy.")
-
         k_idxs = [self.axes.index(ax) for ax in k_axes]
-        plan = cufft.get_fft_plan(self.data, axes=tuple(k_idxs))
-        func = cufft.ifftn if inverse else cufft.fftn
 
-        # Do in-place FFT by reassigning to self.data
-        self.data[...] = func(self.data, axes=k_idxs, norm='ortho', plan=plan, overwrite_x=True)
+        if self.xp is cp:
+            plan = cufft.get_fft_plan(self.data, axes=tuple(k_idxs))
+            func = cufft.ifftn if inverse else cufft.fftn
+            self.data[...] = func(
+                self.data, axes=k_idxs, norm='ortho', plan=plan, overwrite_x=True
+            )
+        else:
+            func = np.fft.ifftn if inverse else np.fft.fftn
+            self.data[...] = func(self.data, axes=k_idxs, norm='ortho')
 
     def __repr__(self):
         return f"LabeledArray(shape={self.data.shape}, axes={self.axes}, joined_axes={self.joined_axes})"
