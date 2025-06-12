@@ -79,7 +79,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
     G_q_crys = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
     G_cart = xp.zeros((int(wfn.ngkmax),3), dtype=xp.float64)
     #print("vqg G_q_crys done")
-    V_qG = xp.zeros((npol, sym.nk_tot, int(wfn.ngkmax)), dtype=xp.float64)
+    V_qG = xp.zeros((npol, npol, sym.nk_tot, int(wfn.ngkmax)), dtype=xp.float64)
     ngks = xp.asarray(wfn.ngk, dtype=xp.int32)
     #print("vqg all arrays done")
 
@@ -105,11 +105,11 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
             G_q_crys[:Gmax_q] = xp.asarray(wfn.get_gvec_nk(iq).astype(np.float64),dtype=xp.float64) # stored as int32, trying to convert efficiently
             G_cart[:Gmax_q] = xp.matmul(G_q_crys[:Gmax_q] + qvec, bvec) # @ is super slow, probably using numpy
 
-            V_qG[iq,:Gmax_q] = xp.divide(4*xp.pi, xp.sum(G_cart*G_cart, axis=1)[:Gmax_q])
+            V_qG[0,0,iq,:Gmax_q] = xp.divide(4*xp.pi, xp.sum(G_cart*G_cart, axis=1)[:Gmax_q])
             kxy = xp.linalg.norm(G_cart[:Gmax_q,:2], axis=1)
             kz = G_cart[:Gmax_q,2]
             # NOT SURE WHY THERES AN EXTRA 2. 8PI NOT 4PI? I\neq J probably? but i compared to an epsmat.h5 file
-            V_qG[iq,:Gmax_q] *= 2 * (1-xp.exp(-zc*kxy)*xp.cos(kz*zc))
+            V_qG[0,0,iq,:Gmax_q] *= 2 * (1-xp.exp(-zc*kxy)*xp.cos(kz*zc))
 
 
         ################################################
@@ -124,8 +124,8 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
         rand_vq = xp.divide(4*xp.pi, xp.einsum('ij,ij->i',randqcart,randqcart))
         kxy_q0 = xp.linalg.norm(randqcart[:,:2],axis=1)
         rand_vq *= 2 * (1. - xp.exp(-xp.pi/bvec[2,2] * kxy_q0) * xp.cos(randqcart[:,2] * xp.pi/bvec[2,2]))
-        V_qG[0,0] = xp.mean(rand_vq)
-        print(f"V_q=0,G=0 from miniBZ monte carlo: {V_qG[0,0]:.4f}")
+        V_qG[0,0,0,0] = xp.mean(rand_vq)
+        print(f"V_q=0,G=0 from miniBZ monte carlo: {V_qG[0,0,0,0]:.4f}")
 
         ##############################################################
         # this is wcoul0 used in BGW/Common/fixwing.f90 (generated in minibzaverage.f90)
@@ -148,7 +148,10 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
         fact = xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # won't work if nonuniform grid
         V_qG *= fact
         wcoul0 *= fact
-    return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
+    if not do_Dmunu:
+        return V_qG[0,0].astype(xp.complex128), wcoul0.astype(xp.complex128)
+    else:
+        return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
 
 def get_D_munu_qG(wfn, sym, q0, xp, V_qG):
     # after getting V_qG = V_c, we can get D_munu = V_c * (delta_munu - khat_mu khat_nu), the second part being the transverse projector.
