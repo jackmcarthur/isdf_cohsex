@@ -15,22 +15,7 @@ import numpy as np
 import symmetry_maps               # imported as requested
 from wfnreader import WFNReader
 from scipy.special import roots_laguerre
-
-# Try to import CuPy; fall back to NumPy
-try:
-    import cupy as cp
-except ImportError:
-    cp = None
-
-# Select xp = cp (if available & GPU) or np
-if cp is not None:
-    try:
-        cp.cuda.runtime.getDeviceCount()
-        xp = cp
-    except Exception:
-        xp = np
-else:
-    xp = np
+from gpu_utils import cp, xp, GPU_AVAILABLE
 
 class GL_window:
     def __init__(self, start_ind, end_ind, wfn):
@@ -84,7 +69,7 @@ def compute_dos(wfn_file, n_points=2000):
     dos = xp.sum(kernel, axis=0) / (dx * xp.sqrt(2*xp.pi))
 
     # convert back to pure NumPy if we used CuPy
-    if cp is not None and xp is cp:
+    if GPU_AVAILABLE:
         energy_grid = cp.asnumpy(energy_grid)
         dos = cp.asnumpy(dos)
 

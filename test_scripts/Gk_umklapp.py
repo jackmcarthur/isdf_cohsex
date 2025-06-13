@@ -1,15 +1,10 @@
 import numpy as np
-import cupy as cp
+from gpu_utils import cp, xp, fftx, GPU_AVAILABLE
 from wfnreader import WFNReader
 from epsreader import EPSReader
-import fftx
 import symmetry_maps
 import cohsex_noqsym
 #import matplotlib.pyplot as plt
-if cp.cuda.is_available():
-    xp = cp
-else:
-    xp = np
 
 # return ranges of bands necessary for \sigma_{X,SX,COH}
 def get_bandranges(nv,nc,nband,nelec):
@@ -47,7 +42,7 @@ if __name__ == "__main__":
     centroids_frac = np.loadtxt('centroids_frac.txt')
     n_rmu = int(centroids_frac.shape[0])
 
-    if cp.cuda.is_available():
+    if GPU_AVAILABLE:
         centroids_frac = cp.asarray(centroids_frac, dtype=cp.float32)
         fft_grid = cp.asarray(wfn.fft_grid, dtype=cp.int32)
     centroid_indices = xp.round(centroids_frac * fft_grid).astype(int)

@@ -24,8 +24,18 @@ Core routines include:
 These supplementary scripts are now stored in the `test_scripts/` directory
 to keep the repository root focused on the main COHSEX drivers.
 
-## Requirements:
- - CuPy (with an available GPU) or NumPy for FFT routines
+## Requirements
 - numpy
 - scipy
+- h5py
+- matplotlib
 
+Optional GPU acceleration is supported with CuPy and FFTX. The code will
+automatically fall back to NumPy if these libraries are not installed.
+
+
+## Setup
+To install the Python dependencies, run:
+```bash
+./run/setup.sh
+```
