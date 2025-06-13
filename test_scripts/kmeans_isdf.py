@@ -1,5 +1,5 @@
 import h5py
-import cupy as cp
+from gpu_utils import cp, xp
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # Import for 3D plotting

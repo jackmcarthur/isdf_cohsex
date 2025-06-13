@@ -1,12 +1,7 @@
 import numpy as np
-import cupy as cp
+from gpu_utils import cp, xp
 from wfnreader import WFNReader
 
-try:
-    cp.cuda.runtime.getDeviceCount()
-    xp = cp
-except Exception:
-    xp = np
 
 class SymMaps:
     def __init__(self, wfn):

@@ -1,13 +1,7 @@
 import numpy as np
-import cupy as cp
-import cupyx.scipy.fft as cufft
+from gpu_utils import cp, xp, cufft, GPU_AVAILABLE
 from numpy import s_
 from typing import Union
-try:
-    cp.cuda.runtime.getDeviceCount()
-    xp = cp
-except Exception:
-    xp = np
 
 ## LabeledArray module
 """
@@ -57,10 +51,9 @@ class LabeledArray:
         elif axes is not None and shape is not None:
             # interpret None as newaxis (size 1)
             shape_resolved = tuple(1 if dim is None else dim for dim in shape)
-            try:
-                cp.cuda.runtime.getDeviceCount()
+            if GPU_AVAILABLE:
                 self.xp = cp
-            except Exception:
+            else:
                 self.xp = np
             self.data = self.xp.zeros(shape_resolved, dtype=dtype)
             self.axes = list(axes)

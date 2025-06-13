@@ -1,15 +1,10 @@
 import numpy as np
-import cupy as cp
+from gpu_utils import cp, xp, fftx
 from wfnreader import WFNReader
 from epsreader import EPSReader
-import fftx
 import symmetry_maps
 import matplotlib.pyplot as plt
-try:
-    cp.cuda.runtime.getDeviceCount()
-    xp = cp
-except Exception:
-    xp = np
+
 
 # return ranges of bands necessary for \sigma_{X,SX,COH}
 def get_bandranges(nv,nc,nband,nelec):

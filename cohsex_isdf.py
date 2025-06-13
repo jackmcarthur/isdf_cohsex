@@ -1,5 +1,5 @@
 import numpy as np
-import cupy as cp
+from gpu_utils import cp, xp
 from wfnreader import WFNReader
 from epsreader import EPSReader
 import symmetry_maps
@@ -8,11 +8,6 @@ from get_windows import get_window_info
 from w_isdf import get_chi0, get_static_w_q
 import h5py
 #import matplotlib.pyplot as plt
-try:
-    cp.cuda.runtime.getDeviceCount()
-    xp = cp
-except Exception:
-    xp = np
 
 # Using the xp alias keeps the code agnostic to NumPy/CuPy, enabling testing on
 # CPUs while still targeting GPU acceleration.
@@ -737,10 +732,8 @@ if __name__ == "__main__":
         print(f"Using GPU: {cp.cuda.runtime.getDeviceProperties(0)['name']}")
         mem_info = cp.cuda.runtime.memGetInfo()
         print(f"Memory Usage: {(mem_info[1] - mem_info[0])/1024**2:.1f}MB / {mem_info[1]/1024**2:.1f}MB")
-        xp = cp
     except Exception:
         print("Using CPU (NumPy)")
-        xp = np
 
     nval = 5
     ncond = 5

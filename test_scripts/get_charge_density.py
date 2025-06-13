@@ -1,7 +1,6 @@
 import numpy as np
-import cupy as cp
+from gpu_utils import cp, xp, fftx, GPU_AVAILABLE
 import h5py as h5
-import fftx 
 import datetime
 
 # Generating a reliable charge density is the first step toward self-consistent
@@ -26,7 +25,7 @@ def perform_fft_3d(data_1d, gvecs, fft_grid):
     # Create 3D shape tuple from FFTgrid
     shape3d = tuple(int(x) for x in fft_grid)
     
-    if cp.cuda.is_available():
+    if GPU_AVAILABLE:
         fft_box = cp.zeros(shape3d, dtype=np.complex64)
     else:
         fft_box = np.zeros(shape3d, dtype=np.complex64)
@@ -76,12 +75,12 @@ def calculate_charge_density(wfn, sym, nval=None, ncond=None):
         for ik in range(1): # paper suggests only using k0
             # Get G-vectors for this k-point
             gvecs_k = sym.get_gvecs_kfull(wfn, ik)
-            if cp.cuda.is_available():
+            if GPU_AVAILABLE:
                 gvecs_k = cp.asarray(gvecs_k)
 
             # Get wavefunction coefficients for this k-point and band
             coeffs_kb = sym.get_cnk_fullzone(wfn, ib, ik)
-            if cp.cuda.is_available():
+            if GPU_AVAILABLE:
                 coeffs_kb = cp.asarray(coeffs_kb)
 
             # Transform each spinor component to real space
@@ -91,7 +90,7 @@ def calculate_charge_density(wfn, sym, nval=None, ncond=None):
 
     # normalize charge density to n_electrons.
     normrho = np.prod(wfn.fft_grid)#/np.prod(wfn.kgrid)
-    if cp.cuda.is_available():
+    if GPU_AVAILABLE:
         charge_density = cp.asarray(normrho) * charge_density
     else:
         charge_density = normrho * charge_density
@@ -122,12 +121,6 @@ def analyze_gvectors(gvecs):
     
 
 if __name__ == "__main__":
-
-    # check for CUDA
-    if cp.cuda.is_available():
-        xp = cp
-    else:
-        xp = np
     
     print(f"Beginning charge density calculation. Using {xp.__name__} backend.")
     nval = 5
