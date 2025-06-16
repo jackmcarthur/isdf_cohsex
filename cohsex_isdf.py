@@ -88,12 +88,9 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
     if sys_dim == 2:
         for iq in range(wfn.nkpts):
             qvec = xp.asarray(wfn.kpoints[iq])
-            print(qvec.shape)
             if iq == 0:
                 qvec = q0xp
-
             Gmax_q = ngks[iq]
-
             G_q_crys.fill(0.)
             G_cart.fill(0.)
             # this saves memory in the case of many kpts but requires a lot of HtoD transfers. revisit.
@@ -106,6 +103,21 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
             # NOT SURE WHY THERES AN EXTRA 2. 8PI NOT 4PI? I\neq J probably? but i compared to an epsmat.h5 file
             V_qG[0,0,iq,:Gmax_q] *= 2 * (1-xp.exp(-zc*kxy)*xp.cos(kz*zc))
 
+            ###############################################
+            # Breit interaction
+            ###############################################
+            if do_Dmunu:
+                # normalize G_cart → shape (Gmax_q,3)
+                unitG = xp.divide(G_cart, xp.linalg.norm(G_cart, axis=1, keepdims=True))
+                # build projector δ_ij - \hat G_i \hat G_j for each G (→ shape (Gmax_q,3,3))
+                proj = xp.eye(3)[None, :, :] - unitG[:, :, None] * unitG[:, None, :]
+                # now copy into V_qG.  If your ipol/jpol indices run 1..3, slice 1:4 →
+                #   proj.transpose(1,2,0) has shape (3,3,Gmax_q) matching [i,j,iq,g]
+                V_qG[1:4, 1:4, iq, :Gmax_q] = proj.transpose(1, 2, 0)
+
+        if do_Dmunu:
+            # multiply by V_c(q)
+            V_qG[1:4,1:4,:,:] *= V_qG[0,0,:,:]
 
         ################################################
         # mini-BZ voronoi monte carlo integration for V_q=0,G=0
@@ -143,6 +155,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
         fact = xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # won't work if nonuniform grid
         V_qG *= fact
         wcoul0 *= fact
+
     if not do_Dmunu:
         return V_qG[0,0].astype(xp.complex128), wcoul0.astype(xp.complex128)
     else:
@@ -154,9 +167,25 @@ def get_D_munu_qG(wfn, sym, q0, xp, V_qG):
     Dmunu_qG = xp.zeros((3, 3, sym.nk_tot, int(wfn.ngkmax)), dtype=xp.float64)
 
 
+def get_small_psi_component(gvecs, kvec, bvec, psi_G, xp):
+    # get alpha/2 (sigma dot (k+G)) psi_nk(G) for bispinor functionality (single k at a time).
+    # possible improvements: do sigma dot v, v = p + [r,V_NL+Sigma], add the DKH4 contribution
+    halfalpha = xp.complex128(0.00364867628215) # 1/2 * alpha
+    sigmadotp = xp.zeros((2,2,gvecs.shape[0]), dtype=xp.complex128)
+
+    gvecsk_cart = xp.matmul(gvecs + kvec, bvec)
+
+    sigmadotp[0,0,:] = gvecsk_cart[:,2]
+    sigmadotp[0,1,:] = gvecsk_cart[:,0] - 1j*gvecsk_cart[:,1]
+    sigmadotp[1,0,:] = gvecsk_cart[:,0] + 1j*gvecsk_cart[:,1]
+    sigmadotp[1,1,:] = -gvecsk_cart[:,2]
+
+    return xp.multiply(halfalpha, xp.einsum('ijG,bjG->biG', sigmadotp, psi_G[:,0:2,:]))
 
 
-def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
+
+
+def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp, bispinor=False):
     """
     Get psi_nk(r) for all k-points in the full Brillouin zone.
     (not u_nk(r)! returns psi_nk(r) = e^{ikr} u_nk(r))
@@ -170,7 +199,8 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
     # Get dimensions
     nb = bandrange[1] - bandrange[0]
     n_rtot = int(xp.prod(wfn.fft_grid))
-    nspinor = wfn.nspinor
+    nspinor_wfnfile = wfn.nspinor
+    nspinor = wfn.nspinor if not bispinor else 4
 
     # Initialize temporary arrays
     psi_rtot = xp.zeros((nb, nspinor, *wfn.fft_grid), dtype=xp.complex128)
@@ -198,7 +228,11 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp):
         gvecs_k_rot = xp.asarray(sym.get_gvecs_kfull(wfn,k_idx))
         # Get wavefunction coefficients (symmetry unfolded)
         for ib, band_idx in enumerate(range(bandrange[0], bandrange[1])):
-            psi_Gspace[ib, :, :] = xp.asarray(sym.get_cnk_fullzone(wfn,band_idx,k_idx))
+            psi_Gspace[ib, 0:nspinor_wfnfile, :] = xp.asarray(sym.get_cnk_fullzone(wfn,band_idx,k_idx))
+
+        # get small psi component
+        if bispinor:
+            psi_Gspace[:, 2:4, :] = get_small_psi_component(gvecs_k_rot, xp.asarray(sym.unfolded_kpts[k_idx], dtype=xp.float64), xp.asarray(wfn.bvec, dtype=xp.float64), psi_Gspace, xp)
         
         # FFT to real space
         psi_rtot.fill(0.+0.j)
@@ -299,14 +333,14 @@ def get_WminV_qGG(wfn, iqbar, eps0mat, epsmat,xp):
 
     return WminV
 
-def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp):
+def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_r, V_qG, xp, bispinor=False):
     """Find the interpolative separable density fitting representation."""
     # Get dimensions
     n_rtot = int(np.prod(wfn.fft_grid))
     n_rmu = int(centroid_indices.shape[0])
     nb_l = bandrange_l[1] - bandrange_l[0]
     nb_r = bandrange_r[1] - bandrange_r[0]
-    nspinor = wfn.nspinor
+    nspinor = wfn.nspinor if not bispinor else 4
     kgridgpu = xp.asarray(wfn.kgrid, dtype=xp.int32)
 
     # Initialize output arrays with (nk, nb) ordering
@@ -358,9 +392,13 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
 
     # fill psi_l/r_rtot_out with respective psi(*)_l/r(r) for all k
     print(f"Performing FFTs for wavefunction ranges {bandrange_l} and {bandrange_r}")
-    fft_bandrange(wfn, sym, bandrange_l, True, psi_l_rtot_out.data, xp=cp)
-    fft_bandrange(wfn, sym, bandrange_r, False, psi_r_rtot_out.data, xp=cp)
+    fft_bandrange(wfn, sym, bandrange_l, True, psi_l_rtot_out.data, xp=cp, bispinor=bispinor)
+    fft_bandrange(wfn, sym, bandrange_r, False, psi_r_rtot_out.data, xp=cp, bispinor=bispinor)
     print("FFTs complete")
+    
+    # make WfnArray's that contain psi_nk(r_mu),E_nk together.
+    enk_l = get_enk_bandrange(wfn, sym, bandrange_l, xp)
+    enk_r = get_enk_bandrange(wfn, sym, bandrange_r, xp)
 
     ##########################################
     # Loop over all q-points
@@ -391,6 +429,10 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
             psi_r_rmu = psi_r_rtot[:, centroid_indices[:, 0], centroid_indices[:, 1], centroid_indices[:, 2]]
             psi_l_rmuT = xp.ascontiguousarray(psi_l_rmu.T)  # memory locality in matmuls. extra mem may be a negative
             psi_r_rmuT = xp.ascontiguousarray(psi_r_rmu.T)
+
+            # TODO: weight by sqrt(1/E_nk - E_F) for l/r
+            #psi_l_rmuT = xp.multiply(psi_l_rmuT, xp.sqrt(xp.divide(1.0,xp.abs(enk_l.data[k_l]-wfn.vbm))))
+            #psi_r_rmuT = xp.multiply(psi_r_rmuT, enk_r.data[k_r])
 
             psi_l_rtot = psi_l_rtot.reshape(nb_l * nspinor, -1)
             psi_r_rtot = psi_r_rtot.reshape(nb_r * nspinor, -1)
@@ -458,10 +500,6 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
 
     xp.conj(psi_l_rmu_out.data, out=psi_l_rmu_out.data)
 
-    # make WfnArray's that contain psi_nk(r_mu),E_nk together.
-    enk_l = get_enk_bandrange(wfn, sym, bandrange_l, xp)
-    enk_r = get_enk_bandrange(wfn, sym, bandrange_r, xp)
-
     wfn_l = WfnArray(psi_l_rmu_out, enk_l)
     wfn_r = WfnArray(psi_r_rmu_out, enk_r)
 
@@ -528,7 +566,6 @@ def get_G_R(Gk):
     # Reorder axes to have kgrid last (batch fft mem locality)
     Gk = Gk.kgrid_to_last()
     Gk.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')  # shape (nfreq*nspin*nrmu*nspin*nrmu, *kgrid)
-
     # V is umklapped to have kpts in FFT ordering [0,...nk/2,-nk/2+1,...].
     # G doesn't need to be because G_(k+G)(r,r') = G_k(r,r') (bloch fn).
     Gk.ifft_kgrid()
@@ -784,39 +821,44 @@ if __name__ == "__main__":
         # print(f"\nPair {i}")
         # print(f"{'Valence Emin':<15}{'Valence Emax':<15}{'Cond Emin':<15}{'Cond Emax':<15}{'z_lm':<10}")
         # print(f"{val_window.start_energy:<15.3f}{val_window.end_energy:<15.3f}{cond_window.start_energy:<15.3f}{cond_window.end_energy:<15.3f}{pair.z_lm:<10.3f}")
-        
-        # print("tau_i")
-        # print(" ".join(f"{tau:.3f}" for tau in pair.tau_i))
-        
-        # print("w_i")
-        # print(" ".join(f"{w:.3f}" for w in pair.w_i))
     print('\n')
 
-    restart = True
-    x_only = False
+    # restart: if True, read interp. vectors and V_qmunu from file
+    restart = False
+    # x_only: if True, skip calculation of Chi(RPA)/W_q, only get exchange self energy
+    x_only = True
+    do_screened = False
+    # bispinor: if True, expand spinor wavefunctions into bispinors, do 4-component calculations
+    bispinor = True
+
+    if x_only and do_screened:
+        raise ValueError("x_only and do_screened cannot both be True")
+
     if not restart:
     ####################################
     # 1.) get (truncated in 2D) coulomb potential v_q(G) and W_q=0(G=G'=0) element
     ####################################
         #V_qG, wcoul0 = get_V_qG(wfn, sym, q0, xp, eps0.epshead, sys_dim)
-        V_qG, wcoul0 = get_V_qG(wfn, sym,(0.001,0.,0.), xp, 0.2, sys_dim)
+        V_qG, wcoul0 = get_V_qG(wfn, sym,(0.001,0.,0.), xp, 0.2, sys_dim, do_Dmunu=bispinor)
 
 
     ####################################
     # 2.) get interpolative separable density fitting basis functions zeta_q,mu(r) and <mu|V_q|nu>
     ####################################
         if x_only:
-            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp)
+            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, n_valrange, nsigmarange, V_qG, xp, bispinor=bispinor)
             write_labeled_arrays_to_h5("taggedarrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
         else:
-            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp)
+            V_qmunu, psi_l_rmu_out, psi_r_rmu_out = get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, nvplussigrange, ncplussigrange, V_qG, xp, bispinor=bispinor)
             write_labeled_arrays_to_h5("taggedarrays.h5", V_qmunu, psi_l_rmu_out, psi_r_rmu_out)
     elif restart and not x_only:
         V_qmunu, psi_l_rmu_out, psi_r_rmu_out = read_labeled_arrays_from_h5("taggedarrays.h5")
 
-    chi0 = get_chi0(psi_l_rmu_out, psi_r_rmu_out, window_pairs, wfn, xp)
-    # hyperparameters: (1-vX)^-1 = sum_n=0,n_mult (vX)^n, block_f is how many freqs are batched for inversion
-    W_q = get_static_w_q(chi0, V_qmunu, wfn, sym, xp, n_mult=10, block_f=1)
+    if not x_only:
+        chi0 = get_chi0(psi_l_rmu_out, psi_r_rmu_out, window_pairs, wfn, xp)
+        # hyperparameters: (1-vX)^-1 = sum_n=0,n_mult (vX)^n, block_f is how many freqs are batched for inversion
+        # update: currently inverting directly; i suspect it's ill posed in the low-dim case
+        W_q = get_static_w_q(chi0, V_qmunu, wfn, sym, xp, n_mult=10, block_f=1)
 
 
     psi_l_rmu_out.psi = psi_l_rmu_out.psi.slice('nb',xp.s_[:wfn.nelec],tagged=True)
@@ -830,7 +872,6 @@ if __name__ == "__main__":
     ####################################
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
     ####################################
-    do_screened = True
     if do_screened:
         sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, W_q, xp)
     else:

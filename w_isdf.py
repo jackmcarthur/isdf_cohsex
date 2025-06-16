@@ -74,22 +74,35 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
     # flip Gv_R -> Gv_-R, keeping Gv_R=0 in the 0th index
     for ik in range(3,6):
         Gv_lm.data = xp.flip(Gv_lm.data, axis=ik)
-        Gv_lm.data = xp.roll(Gv_lm.data,1, axis=ik)
+        Gv_lm.data = xp.roll(Gv_lm.data, 1, axis=ik)
+
+    # swap the r and r' indices of Gv before multiplying with Gc
+    #Gv_lm = Gv_lm.transpose('ntau', 'nspinor2*nrmu2', 'nspinor1*nrmu1', 'nkx', 'nky', 'nkz')
 
     Gv_lm.unjoin('nspinor1', 'nrmu1')
     Gv_lm.unjoin('nspinor2', 'nrmu2')
     Gc_lm.unjoin('nspinor1', 'nrmu1')
     Gc_lm.unjoin('nspinor2', 'nrmu2')
 
+    #Gv_lm = Gv_lm.transpose('ntau', 'nspinor1', 'nrmu2', 'nspinor2', 'nrmu1', 'nkx', 'nky', 'nkz')
+    #xp.multiply(Gv_lm.data, Gc_lm.data, out=Gc_lm.data)
+
     for a in range(psi_v.psi.shape('nspinor')):
         for b in range(psi_v.psi.shape('nspinor')):
-            chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
+            chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gc_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gv_lm.slice_many({'nspinor1':b,'nspinor2':a}))
+    #         #chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
+    #                     gvr = xp.transpose(Gv_lm.slice_many({'nspinor2': b, 'nspinor1': a}), (0, 2, 1, 3, 4, 5))
+    #         chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(
+    #             gvr,
+    #             Gc_lm.slice_many({'nspinor1': a, 'nspinor2': b})
+    #         )
 
     # note it would be more efficient to only fft chi0 in get_chi0
     chi_lm_Yt.fft_kgrid() # chi_R -> chi_q
     chi_out = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
-    oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),-0.5))
+    oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),1.0))
     xp.multiply(chi_out.data, oneoverkgrid, out=chi_out.data)
+    #xp.multiply(chi_out.data, 0.45, out=chi_out.data)
     print('one chi_lm element ', chi_out.data[0,0,0,0,0,0,0,0].get())
     return chi_out.data
 
@@ -161,40 +174,42 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
         Wf = W_q.data[iq]    # shape = (nfreq, N, N)
 
         # chunk over freq‐axis
-        for f0 in range(0, nfreq, block_f):
-            f1 = min(f0+block_f, nfreq)
-            B  = f1 - f0
+        # for f0 in range(0, nfreq, block_f):
+        #     f1 = min(f0+block_f, nfreq)
+        #     B  = f1 - f0
 
-            cb = ch[f0:f1]      # (B, N, N)
-            wb = Wb[:B]         # view into scratch
-            a  = A[:B]
+        #     cb = ch[f0:f1]      # (B, N, N)
+        #     wb = Wb[:B]         # view into scratch
+        #     a  = A[:B]
 
-            # 1) A := Vb @ cb
-            xp.matmul(Vf, cb, out=a)
+        #     # 1) A := Vb @ cb
+        #     xp.matmul(Vf, cb, out=a)
 
-            # 2) Wb := I + A
-            wb[:] = I           # broadcast eye
-            wb += a
+        #     # 2) Wb := I + A
+        #     wb[:] = I           # broadcast eye
+        #     wb += a
 
-            # 3) Build powers A^2 … A^(n_mult+1)
-            # P = a.copy()        # P == A^1
-            # for _ in range(n_mult):
-            #     xp.matmul(P, cb, out=P)
-            #     wb += P
-            cb = a.copy() # chi array now contains vchi
-            for _ in range(n_mult-1):
-                xp.matmul(cb, a, out=P)
-                wb += P
-                cb = P.copy()
-                #print('mtx norm P: ', xp.linalg.norm(P))
-            # 4) Multiply by Vb → W = (1 - Vχ)^(-1) V
-            xp.matmul(wb, Vf, out=Wf[f0:f1])
+        #     # 3) Build powers A^2 … A^(n_mult+1)
+        #     # P = a.copy()        # P == A^1
+        #     # for _ in range(n_mult):
+        #     #     xp.matmul(P, cb, out=P)
+        #     #     wb += P
+        #     cb = a.copy() # chi array now contains vchi
+        #     for _ in range(n_mult-1):
+        #         xp.matmul(cb, a, out=P)
+        #         wb += P
+        #         cb = P.copy()
+        #         #print('mtx norm P: ', xp.linalg.norm(P))
+        #     # 4) Multiply by Vb → W = (1 - Vχ)^(-1) V
+        #     xp.matmul(wb, Vf, out=Wf[f0:f1])
 
-            # 5) write‐back
-            #Wf[f0:f1] = wb
+        #     # 5) write‐back
+        #     #Wf[f0:f1] = wb
+
+        W_q.data[iq] = xp.matmul(xp.linalg.inv(I - xp.matmul(Vf, ch)), Vf)
 
     W_q.unjoin('nkx', 'nky', 'nkz')
-    #W_q.kgrid_to_last()
+    W_q.kgrid_to_last()
     #W_q.ifft_kgrid() # W_q -> W_R
     W_q.unjoin('nspinor1', 'nrmu1')
     W_q.unjoin('nspinor2', 'nrmu2')
