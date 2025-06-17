@@ -156,10 +156,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
         V_qG *= fact
         wcoul0 *= fact
 
-    if not do_Dmunu:
-        return V_qG[0,0].astype(xp.complex128), wcoul0.astype(xp.complex128)
-    else:
-        return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
+    return V_qG.astype(xp.complex128), wcoul0.astype(xp.complex128)
 
 def get_D_munu_qG(wfn, sym, q0, xp, V_qG):
     # after getting V_qG = V_c, we can get D_munu = V_c * (delta_munu - khat_mu khat_nu), the second part being the transverse projector.
@@ -388,8 +385,14 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
 
     # initialize output V_q,mu,nu array
     V_qfullG = xp.zeros((int(wfn.ngkmax)), dtype=xp.complex128)
-    V_q_names = ['nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2']
-    V_qmunu = LabeledArray(shape=(None, *wfn.kgrid, None, n_rmu, None, n_rmu), axes=V_q_names)
+    V_q_names = [
+        'nfreq', 'npol1', 'npol2', 'nkx', 'nky', 'nkz',
+        'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'
+    ]
+    V_qmunu = LabeledArray(
+        shape=(None, npol, npol, *wfn.kgrid, nspinor, n_rmu, nspinor, n_rmu),
+        axes=V_q_names
+    )
 
     # fill psi_l/r_rtot_out with respective psi(*)_l/r(r) for all k
     print(f"Performing FFTs for wavefunction ranges {bandrange_l} and {bandrange_r}")
@@ -479,14 +482,16 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
         G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
         vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki', Sq.astype(np.int32), wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis, :], dtype=xp.int32)
         V_qfullG.fill(0.0 + 0.0j)
-        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[0,0,iqbar, :vcoul_psiG_comps.shape[0]]
+        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[0, 0, iqbar, :vcoul_psiG_comps.shape[0]]
 
         zeta_qG_mu.fill(0.0 + 0.0j)
         for mu in range(zeta_q.shape[0]):
             zeta_qG_mu[mu, :vcoul_psiG_comps.shape[0]] = zeta_q[mu, vcoul_psiG_comps[:, 0], vcoul_psiG_comps[:, 1], vcoul_psiG_comps[:, 2]]
 
         temp = xp.multiply(V_qfullG[:, None], zeta_qG_mu.T)
-        V_qmunu.data[0,*qvec_nonneg,0,:,0,:] = xp.matmul(xp.conj(zeta_qG_mu), temp)
+        V_qmunu.data[0, 0, 0, *qvec_nonneg, 0, :, 0, :] = xp.matmul(
+            xp.conj(zeta_qG_mu), temp
+        )
 
         #####################################
         # If desired (for debugging), read the BGW eps(0)mat.h5 file and use it to calculate E_QPs.
@@ -731,7 +736,8 @@ def read_labeled_arrays_from_h5(filename):
         # Create LabeledArray for V_qmunu
         V_qmunu = LabeledArray(
             data=V_qmunu_data,
-            axes=['nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2']
+            axes=['nfreq', 'npol1', 'npol2', 'nkx', 'nky', 'nkz',
+                  'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2']
         )
         
         # Create LabeledArrays for psi and enk
@@ -859,7 +865,10 @@ if __name__ == "__main__":
         chi0 = get_chi0(psi_l_rmu_out, psi_r_rmu_out, window_pairs, wfn, xp)
         # hyperparameters: (1-vX)^-1 = sum_n=0,n_mult (vX)^n, block_f is how many freqs are batched for inversion
         # update: currently inverting directly; i suspect it's ill posed in the low-dim case
-        W_q = get_static_w_q(chi0, V_qmunu, wfn, sym, xp, n_mult=10, block_f=1)
+        V_for_w = V_qmunu
+        if bispinor:
+            V_for_w = V_qmunu.slice_many({'npol1': 0, 'npol2': 0}, tagged=True)
+        W_q = get_static_w_q(chi0, V_for_w, wfn, sym, xp, n_mult=10, block_f=1)
 
 
     psi_l_rmu_out.psi = psi_l_rmu_out.psi.slice('nb',xp.s_[:wfn.nelec],tagged=True)
@@ -874,9 +883,12 @@ if __name__ == "__main__":
     # 5.) get sigma_mnk from V_q,mu,nu and G_k(r_mu,r_nu)
     ####################################
     if do_screened:
-        sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, W_q, xp)
+        sigma_in = W_q
     else:
-        sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, V_qmunu, xp)
+        sigma_in = V_qmunu
+    if bispinor and sigma_in is V_qmunu:
+        sigma_in = V_qmunu.slice_many({'npol1': 0, 'npol2': 0}, tagged=True)
+    sigma_x_kbar_munu = get_sigma_x_mu_nu(G_R_val_mu_nu, sigma_in, xp)
     sigma_x_kbar_ij = get_sigma_x_kij(psi_r_rmu_out, psi_r_rmu_out, sigma_x_kbar_munu, xp)
 
 
