@@ -1,6 +1,7 @@
 import h5py
-from gpu_utils import cp, xp
+#from gpu_utils import cp, xp
 import numpy as np
+import cupy as cp
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # Import for 3D plotting
 from wfnreader import WFNReader  # Ensure wfnreader is correctly implemented or installed
@@ -239,7 +240,7 @@ if __name__ == "__main__":
     print(f"Original shape: {rho.shape}")  # (25, 25, 100)
     print(f"New shape: {rho_interp.shape}")  # (15, 15, 60)
 
-    labels, centroids, centroid_z_history, steps_taken = weighted_kmeans_cupy(avec, rho, N_k=600)
+    labels, centroids, centroid_z_history, steps_taken = weighted_kmeans_cupy(avec, rho, N_k=60)
     
     # Save fractional coordinates to file
     np.savetxt('centroids_frac.txt', 

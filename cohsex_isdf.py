@@ -110,7 +110,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
                 # normalize G_cart → shape (Gmax_q,3)
                 unitG = xp.divide(G_cart, xp.linalg.norm(G_cart, axis=1, keepdims=True))
                 # build projector δ_ij - \hat G_i \hat G_j for each G (→ shape (Gmax_q,3,3))
-                proj = xp.eye(3)[None, :, :] - unitG[:, :, None] * unitG[:, None, :]
+                proj = xp.eye(3)[None, :, :] - unitG[:Gmax_q, :, None] * unitG[:Gmax_q, None, :]
                 # now copy into V_qG.  If your ipol/jpol indices run 1..3, slice 1:4 →
                 #   proj.transpose(1,2,0) has shape (3,3,Gmax_q) matching [i,j,iq,g]
                 V_qG[1:4, 1:4, iq, :Gmax_q] = proj.transpose(1, 2, 0)
@@ -341,6 +341,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
     nb_l = bandrange_l[1] - bandrange_l[0]
     nb_r = bandrange_r[1] - bandrange_r[0]
     nspinor = wfn.nspinor if not bispinor else 4
+    npol = 1 if not bispinor else 4
     kgridgpu = xp.asarray(wfn.kgrid, dtype=xp.int32)
 
     # Initialize output arrays with (nk, nb) ordering
@@ -478,7 +479,7 @@ def get_zeta_q_and_v_q_mu_nu(wfn, sym, centroid_indices, bandrange_l, bandrange_
         G_Sq = np.round(q_ext.get() - Sq @ wfn.kpoints[iqbar]).astype(np.int32)
         vcoul_psiG_comps = xp.asarray(np.einsum('ij,kj->ki', Sq.astype(np.int32), wfn.get_gvec_nk(iqbar)) - G_Sq[np.newaxis, :], dtype=xp.int32)
         V_qfullG.fill(0.0 + 0.0j)
-        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[iqbar, :vcoul_psiG_comps.shape[0]]
+        V_qfullG[:vcoul_psiG_comps.shape[0]] = V_qG[0,0,iqbar, :vcoul_psiG_comps.shape[0]]
 
         zeta_qG_mu.fill(0.0 + 0.0j)
         for mu in range(zeta_q.shape[0]):
