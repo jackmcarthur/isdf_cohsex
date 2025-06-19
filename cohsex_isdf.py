@@ -6,6 +6,7 @@ import symmetry_maps
 from tagged_arrays import LabeledArray, WfnArray
 from get_windows import get_window_info
 from w_isdf import get_chi0, get_static_w_q
+from gamma_matrices import gamma0, gamma1, gamma2, gamma3
 import h5py
 #import matplotlib.pyplot as plt
 
@@ -598,6 +599,12 @@ def get_sigma_x_mu_nu(G_R, V_q, xp):
         axes=['nfreq', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2', 'nkx', 'nky', 'nkz']
     )
     sigma_R.data += xp.multiply(G_R.data,V_q.data) # should rename to V_R
+
+    # if bispinor:
+    # for gamma_mu,nu in 0,3:
+    # G_Rdata_tmp should be xp.einsum('ac,fcmdnxyz,bd',gamma_mu,G_R.data,gamma_nu) (note mn=spatial, cd=spinor)
+    # to sigma_R should be added xp.multiply(G_Rdata_tmp,V_q.data[mu,nu])
+
     sigma_R.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
     sigma_R.fft_kgrid()
     sigma_R.unjoin('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
