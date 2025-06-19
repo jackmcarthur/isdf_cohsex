@@ -117,7 +117,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
                 V_qG[1:4, 1:4, iq, :Gmax_q] = proj.transpose(1, 2, 0)
 
         if do_Dmunu:
-            # multiply by V_c(q)
+            # multiply Breit part by V_c(q)
             V_qG[1:4,1:4,:,:] *= V_qG[0,0,:,:]
 
         ################################################
@@ -153,7 +153,7 @@ def get_V_qG(wfn, sym, q0, xp, epshead, sys_dim, do_Dmunu=False):
 
         print(f"W_q=0(G=G'=0) from miniBZ monte carlo: {wcoul0:.4f}")
 
-        fact = xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # won't work if nonuniform grid
+        fact = xp.float64(1./wfn.cell_volume) #xp.float64(1./(sym.nk_tot*wfn.cell_volume)) # won't work if nonuniform grid
         V_qG *= fact
         wcoul0 *= fact
 
@@ -228,7 +228,7 @@ def fft_bandrange(wfn, sym, bandrange, is_left, psi_rtot_out, xp=cp, bispinor=Fa
         for ib, band_idx in enumerate(range(bandrange[0], bandrange[1])):
             psi_Gspace[ib, 0:nspinor_wfnfile, :] = xp.asarray(sym.get_cnk_fullzone(wfn,band_idx,k_idx))
 
-        # get small psi component
+        # get small psi component. probably needs performance improvement.
         if bispinor:
             psi_Gspace[:, 2:4, :] = get_small_psi_component(gvecs_k_rot, xp.asarray(sym.unfolded_kpts[k_idx], dtype=xp.float64), xp.asarray(wfn.bvec, dtype=xp.float64), psi_Gspace, xp)
         
@@ -590,6 +590,7 @@ def get_sigma_x_mu_nu(G_R, V_q, xp):
     V_q = V_q.kgrid_to_last()
     V_q.join('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
     V_q.ifft_kgrid()
+    xp.multiply(V_q.data,xp.sqrt(sym.nk_tot),out=V_q.data) # this makes V_R  equal to mtxels of 1/|r-r'|
     V_q.unjoin('nfreq','nspinor1','nrmu1','nspinor2','nrmu2')
 
     print("G_R and V_R obtained")
@@ -611,7 +612,7 @@ def get_sigma_x_mu_nu(G_R, V_q, xp):
     sigma_R = sigma_R.transpose('nfreq','nkx','nky','nkz','nspinor1','nrmu1','nspinor2','nrmu2')
     sigma_R.join('nkx','nky','nkz')
 
-    sigma_R.data *= -xp.sqrt(sym.nk_tot) # due to norm ortho... unclear
+    sigma_R.data *= -1.0/sym.nk_tot # physical factor for sum over all kpts.
     #sigma_R.data *= -1.0
     return sigma_R
 
