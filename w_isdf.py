@@ -2,6 +2,7 @@ import numpy as np
 from gpu_utils import cp, xp
 from wfnreader import WFNReader
 from tagged_arrays import LabeledArray
+from gamma_matrices import gammas_sparse
 # The routines here construct chi^0 and the screened interaction W using the
 # CTSP approach in the static limit.  Once the frequency grids are restored, the
 # same machinery will let us tackle full dynamical GW.
@@ -10,13 +11,15 @@ from tagged_arrays import LabeledArray
 def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
     ntau = win.ntau
     nspinor = psi_v.psi.shape('nspinor')
+    npol = 4 if nspinor == 4 else 1 # JM: check this
     nrmu = psi_v.psi.shape('nrmu')
     psi_v.psi.join('nspinor', 'nrmu')
     psi_c.psi.join('nspinor', 'nrmu')
     # getting G(A)_lm and G(B)_lm for each tau
     Gv_lm = LabeledArray(shape=(*wfn.kgrid, ntau, nspinor, nrmu, nspinor, nrmu), axes=('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'))
     Gc_lm = LabeledArray(shape=(*wfn.kgrid, ntau, nspinor, nrmu, nspinor, nrmu), axes=('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'))
-    chi_lm_Yt = LabeledArray(shape=(ntau, 1, nrmu, 1, nrmu, *wfn.kgrid), axes=('ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2', 'nkx', 'nky', 'nkz'))
+    chi_lm_Yt = LabeledArray(shape=(ntau, npol, nrmu, npol, nrmu, *wfn.kgrid), axes=('ntau', 'npol1', 'nrmu1', 'npol2', 'nrmu2', 'nkx', 'nky', 'nkz'))
+    scratch = xp.empty((ntau, 1, nrmu, 1, nrmu, *wfn.kgrid), dtype=xp.complex128) # holds one chi^IJ piece at a time
     Gv_lm.join('nkx', 'nky', 'nkz')
     Gc_lm.join('nkx', 'nky', 'nkz')
     Gv_lm.join('nspinor1', 'nrmu1')
@@ -86,20 +89,39 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 
     #Gv_lm = Gv_lm.transpose('ntau', 'nspinor1', 'nrmu2', 'nspinor2', 'nrmu1', 'nkx', 'nky', 'nkz')
     #xp.multiply(Gv_lm.data, Gc_lm.data, out=Gc_lm.data)
+    if npol == 4:
+        scratch = xp.empty_like(Gc_lm.slice_many({'nspinor1': 0, 'nspinor2': 0}))
 
-    for a in range(psi_v.psi.shape('nspinor')):
-        for b in range(psi_v.psi.shape('nspinor')):
-            chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gc_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gv_lm.slice_many({'nspinor1':b,'nspinor2':a}))
-    #         #chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
-    #                     gvr = xp.transpose(Gv_lm.slice_many({'nspinor2': b, 'nspinor1': a}), (0, 2, 1, 3, 4, 5))
-    #         chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(
-    #             gvr,
-    #             Gc_lm.slice_many({'nspinor1': a, 'nspinor2': b})
-    #         )
+        for I, (rI, cI, vI) in enumerate(gammas_sparse):
+            for J, (rJ, cJ, vJ) in enumerate(gammas_sparse):
+                target = chi_lm_Yt.data[:,I,:,J,:,:,:,:] #slice_many({'gamma1': I, 'gamma2': J})
+                target[...] = 0.0
+                for p in range(len(vI)):
+                    a = int(rI[p])
+                    c = int(cI[p])
+                    gI = vI[p]
+                    for q in range(len(vJ)):
+                        b = int(rJ[q])
+                        d = int(cJ[q])
+                        gJ = vJ[q]
+                        xp.multiply(Gc_lm.slice_many({'nspinor1': a, 'nspinor2': b}),
+                                    Gv_lm.slice_many({'nspinor1': c, 'nspinor2': d}),
+                                    out=scratch)
+                        xp.add(target, gI * gJ * scratch, out=target)
+    else:
+        for a in range(psi_v.psi.shape('nspinor')):
+            for b in range(psi_v.psi.shape('nspinor')):
+                chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gc_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gv_lm.slice_many({'nspinor1':b,'nspinor2':a}))
+        #         #chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(Gv_lm.slice_many({'nspinor1':a,'nspinor2':b}), Gc_lm.slice_many({'nspinor1':b,'nspinor2':a}))
+        #                     gvr = xp.transpose(Gv_lm.slice_many({'nspinor2': b, 'nspinor1': a}), (0, 2, 1, 3, 4, 5))
+        #         chi_lm_Yt.data[:,0,:,0,:,:,:,:] += xp.multiply(
+        #             gvr,
+        #             Gc_lm.slice_many({'nspinor1': a, 'nspinor2': b})
+        #         )
 
     # note it would be more efficient to only fft chi0 in get_chi0
     chi_lm_Yt.fft_kgrid() # chi_R -> chi_q
-    chi_out = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    chi_out = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'npol1', 'nrmu1', 'npol2', 'nrmu2')
     oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),1.0))
     xp.multiply(chi_out.data, oneoverkgrid, out=chi_out.data)
     #xp.multiply(chi_out.data, 0.45, out=chi_out.data)
@@ -110,8 +132,9 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
 # sums contributions from all windows
 def get_chi0(psi_v, psi_c, windows, wfn, xp):
     nspinor = psi_v.psi.shape('nspinor')
+    npol = 4 if nspinor == 4 else 1
     nrmu = psi_v.psi.shape('nrmu')
-    chi0 = LabeledArray(shape=(1, *wfn.kgrid, 1, nrmu, 1, nrmu), axes=('ntau', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'))
+    chi0 = LabeledArray(shape=(1, *wfn.kgrid, npol, nrmu, npol, nrmu), axes=('ntau', 'nkx', 'nky', 'nkz', 'npol1', 'nrmu1', 'npol2', 'nrmu2'))
     #chi0.join('nkx', 'nky', 'nkz')
     #chi0.join('nspinor1', 'nrmu1')
     #chi0.join('nspinor2', 'nrmu2')
@@ -124,32 +147,39 @@ def get_chi0(psi_v, psi_c, windows, wfn, xp):
         # note that doing += doesn't work because it's not a cupy fn 
         xp.add(chi0.data[0,:,:,:,:,:,:,:], xp.einsum('t,ti...->i...', quad_weights, chi_lm), out=chi0.data[0,:,:,:,:,:,:,:])
 
-    chi = chi0.transpose('nkx', 'nky', 'nkz', 'ntau', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    chi = chi0.transpose('nkx', 'nky', 'nkz', 'ntau', 'npol1', 'nrmu1', 'npol2', 'nrmu2')
     return chi
 
-def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
+def get_static_w_q(chi_q, Vq, wfn, sym, xp, n_mult=10, block_f=1, bispinor=False):
     # w_q(omega) = (1-v_q @ chi_q)^{-1} @ v_q
     # This implementation performs the CTSP matrix inversion in the static limit.
     # Once the frequency mesh is restored this routine will compute W(omega) on
     # the full imaginary-time grid.
     # if A = v_q @ chi_q, then (1-A)^{-1} = 1 + A + A^2 + A^3 + ... (iterative matrix inversion faster + more stable than direct)
     # A^N is done with blocked GEMMs along the frequency axis; since we currently do COHSEX we set block_q=1
-    nspinor_w = chi_q.shape('nspinor1')
+
+    #if bispinor:
+        # die because no chi_munu = gamma_mu gamma_nu G G yet
+    #    raise ValueError("bispinor not implemented yet")
+    npol_w = chi_q.shape('npol1')
     nrmu = chi_q.shape('nrmu1')
     print('one chi element: ', chi_q.data[0,0,0,0,0,0,0,0].get())
 
+    # does not matter if bispinor or not
+    V_q = Vq.transpose('nfreq','nkx','nky','nkz','npol1','nrmu1','npol2','nrmu2')
     V_q.join('nkx', 'nky', 'nkz')
-    V_q.join('nspinor1', 'nrmu1')
-    V_q.join('nspinor2', 'nrmu2')
+    V_q.join('npol1', 'nrmu1')
+    V_q.join('npol2', 'nrmu2')
+
+    W_q = LabeledArray(shape=(*wfn.kgrid, 1, npol_w, nrmu, npol_w, nrmu), axes=('nkx', 'nky', 'nkz', 'nfreq','npol1', 'nrmu1', 'npol2', 'nrmu2'))
+    W_q.join('nkx', 'nky', 'nkz')
+    W_q.join('npol1', 'nrmu1')
+    W_q.join('npol2', 'nrmu2')
+
 
     chi_q.join('nkx', 'nky', 'nkz')
-    chi_q.join('nspinor1', 'nrmu1')
-    chi_q.join('nspinor2', 'nrmu2')
-
-    W_q = LabeledArray(shape=(*wfn.kgrid, 1, nspinor_w, nrmu, nspinor_w, nrmu), axes=('nkx', 'nky', 'nkz', 'nfreq','nspinor1', 'nrmu1', 'nspinor2', 'nrmu2'))
-    W_q.join('nkx', 'nky', 'nkz')
-    W_q.join('nspinor1', 'nrmu1')
-    W_q.join('nspinor2', 'nrmu2')
+    chi_q.join('npol1', 'nrmu1')
+    chi_q.join('npol2', 'nrmu2')
     
     nk_tot, nfreq, N, _ = chi_q.data.shape
 
@@ -171,7 +201,7 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     for iq in range(nk_tot):
         Vf = V_q.data[0,iq]  # shape = (N, N)
         ch = chi_q.data[iq]  # shape = (nfreq, N, N)
-        Wf = W_q.data[iq]    # shape = (nfreq, N, N)
+        #Wf = W_q.data[iq]    # shape = (nfreq, N, N)
 
         # chunk over freq‐axis
         # for f0 in range(0, nfreq, block_f):
@@ -211,13 +241,14 @@ def get_static_w_q(chi_q, V_q, wfn, sym, xp, n_mult=10, block_f=1):
     W_q.unjoin('nkx', 'nky', 'nkz')
     W_q.kgrid_to_last()
     #W_q.ifft_kgrid() # W_q -> W_R
-    W_q.unjoin('nspinor1', 'nrmu1')
-    W_q.unjoin('nspinor2', 'nrmu2')
+    W_q.unjoin('npol1', 'nrmu1')
+    W_q.unjoin('npol2', 'nrmu2')
     # could do W_q -> W_R here but it's already done in the get_sigma function
-    W = W_q.transpose('nfreq', 'nkx', 'nky', 'nkz', 'nspinor1', 'nrmu1', 'nspinor2', 'nrmu2')
+    W = W_q.transpose('nfreq', 'nkx', 'nky', 'nkz', 'npol1', 'nrmu1', 'npol2', 'nrmu2')
 
     V_q.unjoin('nkx', 'nky', 'nkz')
-    V_q.unjoin('nspinor1', 'nrmu1')
-    V_q.unjoin('nspinor2', 'nrmu2')
+    
+    V_q.unjoin('npol1', 'nrmu1')
+    V_q.unjoin('npol2', 'nrmu2')
 
     return W
