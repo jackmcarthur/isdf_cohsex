@@ -122,8 +122,8 @@ def get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp):
     # note it would be more efficient to only fft chi0 in get_chi0
     chi_lm_Yt.fft_kgrid() # chi_R -> chi_q
     chi_out = chi_lm_Yt.transpose('ntau', 'nkx', 'nky', 'nkz', 'npol1', 'nrmu1', 'npol2', 'nrmu2')
-    oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),1.0))
-    xp.multiply(chi_out.data, oneoverkgrid, out=chi_out.data)
+    #oneoverkgrid = xp.complex128(np.power(np.complex128(wfn.kgrid[0]*wfn.kgrid[1]*wfn.kgrid[2]),0.5))
+    #xp.multiply(chi_out.data, oneoverkgrid, out=chi_out.data)
     #xp.multiply(chi_out.data, 0.45, out=chi_out.data)
     print('one chi_lm element ', chi_out.data[0,0,0,0,0,0,0,0].get())
     return chi_out.data
@@ -143,7 +143,7 @@ def get_chi0(psi_v, psi_c, windows, wfn, xp):
         chi_lm = get_chi_lm_Yt(psi_v, psi_c, win, wfn, xp)
         # -2 z_lm w_i exp(-(z_lm (E_c - E_v) - 1) tau_i)
         # TODO (eventually):this should be *2 in the non-spinor case only.
-        quad_weights = xp.asarray(-1.*win.z_lm*win.w_i*np.exp(-(win.z_lm*(win.cond_window.start_energy - win.val_window.end_energy)-1.)*win.tau_i),dtype=xp.complex128)
+        quad_weights = xp.asarray(-2.*win.z_lm*win.w_i*np.exp(-(win.z_lm*(win.cond_window.start_energy - win.val_window.end_energy)-1.)*win.tau_i),dtype=xp.complex128)
         # note that doing += doesn't work because it's not a cupy fn 
         xp.add(chi0.data[0,:,:,:,:,:,:,:], xp.einsum('t,ti...->i...', quad_weights, chi_lm), out=chi0.data[0,:,:,:,:,:,:,:])
 
